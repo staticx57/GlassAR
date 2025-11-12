@@ -550,6 +550,9 @@ def handle_stop_recording():
         'message': 'Recording stopped' if success else 'No recording in progress'
     })
 
+# Import and setup companion app extension
+from server_companion_extension import setup_companion_events
+
 if __name__ == '__main__':
     print("="*60)
     print("Thermal AR Processing Server")
@@ -558,5 +561,9 @@ if __name__ == '__main__':
     print("\nStarting server on port 8080...")
     print("Dashboard available at: http://localhost:8080")
     print("\nWaiting for Google Glass connection...")
-    
+
+    # Setup companion app Socket.IO events
+    setup_companion_events(socketio, processor)
+    print("Companion app extension loaded")
+
     socketio.run(app, host='0.0.0.0', port=8080, debug=True)

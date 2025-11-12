@@ -5,6 +5,9 @@ Adds Socket.IO events and handlers for remote control and monitoring
 via the companion app running on ThinkPad P16.
 """
 
+import time
+from flask import request
+
 def setup_companion_events(socketio, processor):
     """
     Setup Socket.IO events for companion app integration
