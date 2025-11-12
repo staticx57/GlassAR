@@ -193,6 +193,17 @@ def setup_companion_events(socketio, processor):
 
         print(f'[Companion] Auto-snapshot settings updated: {data}')
 
+    @socketio.on('set_colormap')
+    def handle_set_colormap(data):
+        """Change thermal colormap on Glass"""
+        colormap = data.get('colormap', 'iron')
+
+        # Send to all Glass clients
+        for glass_sid in glass_clients:
+            socketio.emit('set_colormap', {'colormap': colormap}, room=glass_sid)
+
+        print(f'[Companion] Colormap changed to: {colormap}')
+
     # ===== System Information =====
 
     @socketio.on('get_stats')

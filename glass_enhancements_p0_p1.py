@@ -550,6 +550,193 @@ class AutoSnapshotWidget(QWidget):
         self.conf_threshold.setValue(int(settings.get('confidence_threshold', 0.7) * 100))
         self.cooldown.setValue(settings.get('cooldown_seconds', 5))
 
+# ==================== Thermal Colorbar Display ====================
+
+class ThermalColorbarWidget(QWidget):
+    """
+    Widget for displaying thermal colormap legend
+    """
+
+    colormap_changed = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.current_colormap = 'iron'
+        self.min_temp = 0
+        self.max_temp = 100
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Colormap selector
+        selector_layout = QHBoxLayout()
+        selector_layout.addWidget(QLabel("Colormap:"))
+
+        self.colormap_combo = QComboBox()
+        self.colormap_combo.addItems([
+            'Iron',
+            'Rainbow',
+            'White Hot',
+            'Black Hot',
+            'Arctic',
+            'Lava',
+            'Grayscale'
+        ])
+        self.colormap_combo.currentTextChanged.connect(self.on_colormap_changed)
+        selector_layout.addWidget(self.colormap_combo)
+        selector_layout.addStretch()
+
+        layout.addLayout(selector_layout)
+
+        # Colorbar display
+        self.colorbar_label = QLabel()
+        self.colorbar_label.setMinimumHeight(40)
+        self.colorbar_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.colorbar_label)
+
+        # Temperature range labels
+        range_layout = QHBoxLayout()
+        self.min_temp_label = QLabel("0°C")
+        self.min_temp_label.setAlignment(Qt.AlignLeft)
+        self.max_temp_label = QLabel("100°C")
+        self.max_temp_label.setAlignment(Qt.AlignRight)
+
+        range_layout.addWidget(self.min_temp_label)
+        range_layout.addStretch()
+        range_layout.addWidget(self.max_temp_label)
+
+        layout.addLayout(range_layout)
+
+        # Generate initial colorbar
+        self.update_colorbar()
+
+    def on_colormap_changed(self, colormap_name):
+        """Handle colormap change"""
+        self.current_colormap = colormap_name.lower().replace(' ', '_')
+        self.update_colorbar()
+        self.colormap_changed.emit(self.current_colormap)
+
+    def update_colorbar(self):
+        """Generate and display colorbar"""
+        import cv2
+        import numpy as np
+
+        # Create gradient array (1 x 256)
+        gradient = np.linspace(0, 255, 256, dtype=np.uint8).reshape(1, -1)
+
+        # Apply colormap
+        colormap_cv = self.get_cv_colormap(self.current_colormap)
+        colored_gradient = cv2.applyColorMap(gradient, colormap_cv)
+
+        # Resize to widget height
+        height = 40
+        colored_gradient = cv2.resize(colored_gradient, (256, height), interpolation=cv2.INTER_LINEAR)
+
+        # Convert to QPixmap
+        rgb_image = cv2.cvtColor(colored_gradient, cv2.COLOR_BGR2RGB)
+        height, width, channel = rgb_image.shape
+        bytes_per_line = 3 * width
+        q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_image)
+
+        # Scale to fit widget
+        scaled_pixmap = pixmap.scaled(
+            self.colorbar_label.width(),
+            self.colorbar_label.height(),
+            Qt.IgnoreAspectRatio,
+            Qt.SmoothTransformation
+        )
+
+        self.colorbar_label.setPixmap(scaled_pixmap)
+
+    def get_cv_colormap(self, name):
+        """Get OpenCV colormap constant"""
+        colormaps = {
+            'iron': cv2.COLORMAP_HOT,
+            'rainbow': cv2.COLORMAP_RAINBOW,
+            'white_hot': cv2.COLORMAP_BONE,
+            'black_hot': cv2.COLORMAP_BONE,  # Inverted
+            'arctic': cv2.COLORMAP_WINTER,
+            'lava': cv2.COLORMAP_HOT,
+            'grayscale': cv2.COLORMAP_BONE
+        }
+        return colormaps.get(name, cv2.COLORMAP_HOT)
+
+    def set_temperature_range(self, min_temp, max_temp, unit='celsius'):
+        """Update temperature range labels"""
+        self.min_temp = min_temp
+        self.max_temp = max_temp
+
+        unit_symbol = "°C" if unit == 'celsius' else "°F"
+        self.min_temp_label.setText(f"{min_temp:.0f}{unit_symbol}")
+        self.max_temp_label.setText(f"{max_temp:.0f}{unit_symbol}")
+
+    def set_colormap(self, colormap_name):
+        """Set colormap programmatically"""
+        index = self.colormap_combo.findText(
+            colormap_name.replace('_', ' ').title(),
+            Qt.MatchFixedString
+        )
+        if index >= 0:
+            self.colormap_combo.setCurrentIndex(index)
+
+# ==================== UI Mode Manager ====================
+
+class UIModeManager(QWidget):
+    """
+    Widget for managing UI complexity levels (Simple/Advanced)
+    """
+
+    mode_changed = pyqtSignal(str)  # 'simple' or 'advanced'
+
+    def __init__(self):
+        super().__init__()
+        self.current_mode = 'simple'
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+
+        label = QLabel("UI Mode:")
+        label.setFont(QFont("Arial", 10, QFont.Bold))
+        layout.addWidget(label)
+
+        self.simple_btn = QPushButton("🔵 Simple")
+        self.simple_btn.setCheckable(True)
+        self.simple_btn.setChecked(True)
+        self.simple_btn.clicked.connect(lambda: self.set_mode('simple'))
+        self.simple_btn.setToolTip("Show only essential controls")
+
+        self.advanced_btn = QPushButton("🔧 Advanced")
+        self.advanced_btn.setCheckable(True)
+        self.advanced_btn.clicked.connect(lambda: self.set_mode('advanced'))
+        self.advanced_btn.setToolTip("Show all features and controls")
+
+        layout.addWidget(self.simple_btn)
+        layout.addWidget(self.advanced_btn)
+        layout.addStretch()
+
+    def set_mode(self, mode):
+        """Set UI mode"""
+        self.current_mode = mode
+        self.simple_btn.setChecked(mode == 'simple')
+        self.advanced_btn.setChecked(mode == 'advanced')
+
+        # Update button styles
+        if mode == 'simple':
+            self.simple_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+            self.advanced_btn.setStyleSheet("")
+        else:
+            self.simple_btn.setStyleSheet("")
+            self.advanced_btn.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold;")
+
+        self.mode_changed.emit(mode)
+
+    def get_mode(self):
+        """Get current UI mode"""
+        return self.current_mode
+
 # ==================== Integration Instructions ====================
 
 """
@@ -558,7 +745,7 @@ To integrate these enhancements into glass_companion_app.py:
 1. Import this module:
    from glass_enhancements_p0_p1 import (
        SystemMonitorWidget, SettingsManager, SessionNotesWidget,
-       TemperatureMeasurementWidget, AutoSnapshotWidget
+       TemperatureMeasurementWidget, AutoSnapshotWidget, ThermalColorbarWidget
    )
 
 2. In GlassCompanionApp.__init__():
