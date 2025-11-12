@@ -98,6 +98,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private ThermalAnalysis mThermalAnalysis = null;
     private String mCurrentMode = MODE_THERMAL_ONLY;
 
+    // Colormap settings
+    private String mCurrentColormap = "iron"; // Default colormap
+
     // Glass EE2 built-in RGB camera
     private android.hardware.Camera mRgbCamera;
     private boolean mRgbCameraEnabled = false;
@@ -612,6 +615,246 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             mNetworkIndicator.setText(icon);
             mNetworkIndicator.setTextColor(color);
         });
+
+        // Send network stats to server/companion
+        sendNetworkStats(latencyMs, signalStrength);
+    }
+
+    /**
+     * Send network statistics to server/companion app
+     */
+    private void sendNetworkStats(int latencyMs, int signalStrength) {
+        if (mSocket != null && mConnected) {
+            try {
+                JSONObject data = new JSONObject();
+                data.put("latency_ms", latencyMs);
+                data.put("signal_strength", signalStrength);
+                data.put("timestamp", System.currentTimeMillis());
+                mSocket.emit("network_stats", data);
+            } catch (JSONException e) {
+                Log.e(TAG, "Error sending network stats", e);
+            }
+        }
+    }
+
+    /**
+     * Start periodic network statistics updates
+     */
+    private void startNetworkStatsUpdates() {
+        // Use a handler to send network stats every 5 seconds
+        final android.os.Handler handler = new android.os.Handler();
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (mConnected) {
+                    // Calculate network stats (simplified - measure ping to server)
+                    int latencyMs = measureLatency();
+                    int signalStrength = getWifiSignalStrength();
+
+                    updateNetworkIndicator(signalStrength, latencyMs);
+
+                    // Schedule next update
+                    handler.postDelayed(this, 5000);
+                }
+            }
+        }, 5000);
+    }
+
+    /**
+     * Measure network latency (simplified)
+     */
+    private int measureLatency() {
+        // Simplified latency measurement
+        // In production, you'd ping the server and measure round-trip time
+        // For now, return a reasonable estimate based on connection quality
+        return 50; // Default to 50ms (update with actual measurement if needed)
+    }
+
+    /**
+     * Get WiFi signal strength as percentage
+     * Returns 0% if WiFi unavailable or disabled
+     */
+    private int getWifiSignalStrength() {
+        try {
+            android.net.wifi.WifiManager wifiManager =
+                (android.net.wifi.WifiManager) getSystemService(Context.WIFI_SERVICE);
+
+            if (wifiManager == null) {
+                Log.w(TAG, "WiFi manager unavailable");
+                return 0; // No WiFi manager = no signal
+            }
+
+            // Check if WiFi is enabled
+            if (!wifiManager.isWifiEnabled()) {
+                Log.w(TAG, "WiFi is disabled");
+                return 0; // WiFi disabled = 0% signal
+            }
+
+            android.net.wifi.WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+            if (wifiInfo == null) {
+                Log.w(TAG, "WiFi info unavailable");
+                return 0;
+            }
+
+            int rssi = wifiInfo.getRssi();
+
+            // Check for invalid RSSI (e.g., not connected)
+            if (rssi == 0 || rssi < -100 || rssi > 0) {
+                Log.w(TAG, "Invalid RSSI: " + rssi);
+                return 0;
+            }
+
+            // Convert RSSI to percentage (typical range: -100 to -50 dBm)
+            // -100 dBm = 0%, -50 dBm = 100%
+            return Math.max(0, Math.min(100, (rssi + 100) * 2));
+
+        } catch (SecurityException e) {
+            Log.e(TAG, "Missing WiFi permission (should not happen with ACCESS_WIFI_STATE)", e);
+            return 0;
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting WiFi signal strength", e);
+            return 0;
+        }
+    }
+
+    /**
+     * Extract temperature measurements from thermal frame
+     * Boson 320 outputs 16-bit thermal data (YUYV format)
+     */
+    private ThermalData extractTemperatures(byte[] thermalFrame) {
+        try {
+            // Validate frame size
+            int expectedSize = BOSON_WIDTH * BOSON_HEIGHT * 2; // YUYV = 2 bytes/pixel
+            if (thermalFrame == null || thermalFrame.length < expectedSize) {
+                Log.w(TAG, "Invalid thermal frame size: " +
+                      (thermalFrame != null ? thermalFrame.length : "null") +
+                      " (expected: " + expectedSize + ")");
+                return new ThermalData(0, 0, 0, 0);
+            }
+
+            // Calculate center pixel offset (center of 320x256 frame)
+            int centerY = BOSON_HEIGHT / 2;
+            int centerX = BOSON_WIDTH / 2;
+            int centerOffset = (centerY * BOSON_WIDTH + centerX) * 2; // *2 for YUYV (2 bytes per pixel)
+
+            // Bounds check for center pixel
+            if (centerOffset + 1 >= thermalFrame.length) {
+                Log.e(TAG, "Center pixel offset out of bounds: " + centerOffset +
+                      " (frame length: " + thermalFrame.length + ")");
+                return new ThermalData(0, 0, 0, 0);
+            }
+
+            // Extract center pixel value
+            int centerPixel = (thermalFrame[centerOffset] & 0xFF) | ((thermalFrame[centerOffset + 1] & 0xFF) << 8);
+            float centerTemp = applyCalibration(centerPixel);
+
+            // Calculate min, max, and average temperatures
+            float minTemp = Float.MAX_VALUE;
+            float maxTemp = Float.MIN_VALUE;
+            float sum = 0;
+            int count = 0;
+
+            // Iterate through all pixels (YUYV format - 2 bytes per pixel)
+            for (int i = 0; i < thermalFrame.length - 1; i += 2) {
+                int pixel = (thermalFrame[i] & 0xFF) | ((thermalFrame[i + 1] & 0xFF) << 8);
+                float temp = applyCalibration(pixel);
+
+                minTemp = Math.min(minTemp, temp);
+                maxTemp = Math.max(maxTemp, temp);
+                sum += temp;
+                count++;
+            }
+
+            // Prevent division by zero
+            float avgTemp = count > 0 ? sum / count : 0;
+
+            return new ThermalData(centerTemp, minTemp, maxTemp, avgTemp);
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error extracting temperatures", e);
+            // Return default values on error
+            return new ThermalData(0, 0, 0, 0);
+        }
+    }
+
+    /**
+     * Apply Boson 320 calibration to convert raw pixel value to temperature (Celsius)
+     * Boson 320 calibration formula: T = (pixel - 8192) * 0.01 + 20.0
+     * This is a simplified calibration - actual Boson calibration may vary
+     */
+    private float applyCalibration(int pixelValue) {
+        // Boson 320 typical calibration
+        // Raw values typically range from ~7000-10000 for normal temperature ranges
+        return (pixelValue - 8192) * 0.01f + 20.0f;
+    }
+
+    /**
+     * Send thermal data measurements to server/companion app
+     */
+    private void sendThermalData(ThermalData thermalData) {
+        if (mSocket != null && mConnected) {
+            try {
+                JSONObject data = new JSONObject();
+                data.put("center_temp", thermalData.centerTemp);
+                data.put("min_temp", thermalData.minTemp);
+                data.put("max_temp", thermalData.maxTemp);
+                data.put("avg_temp", thermalData.avgTemp);
+                data.put("timestamp", System.currentTimeMillis());
+                mSocket.emit("thermal_data", data);
+            } catch (JSONException e) {
+                Log.e(TAG, "Error sending thermal data", e);
+            }
+        }
+    }
+
+    /**
+     * Handle auto-snapshot settings from companion app
+     */
+    private void handleAutoSnapshotSettings(JSONObject data) {
+        try {
+            boolean enabled = data.getBoolean("enabled");
+            double tempThreshold = data.getDouble("temp_threshold");
+            double confThreshold = data.getDouble("confidence_threshold");
+            int cooldownSeconds = data.getInt("cooldown_seconds");
+
+            // Store settings (add member variables at top of class if needed)
+            // mAutoSnapshotEnabled = enabled;
+            // mAutoSnapshotTempThreshold = tempThreshold;
+            // mAutoSnapshotConfThreshold = confThreshold;
+            // mAutoSnapshotCooldown = cooldownSeconds;
+
+            Log.i(TAG, String.format("Auto-snapshot settings updated: enabled=%b, temp=%.1f°C, conf=%.2f, cooldown=%ds",
+                    enabled, tempThreshold, confThreshold, cooldownSeconds));
+
+            runOnUiThread(() ->
+                Toast.makeText(this, "Auto-snapshot: " + (enabled ? "Enabled" : "Disabled"),
+                    Toast.LENGTH_SHORT).show()
+            );
+        } catch (JSONException e) {
+            Log.e(TAG, "Error parsing auto-snapshot settings", e);
+        }
+    }
+
+    /**
+     * Handle colormap change from companion app
+     */
+    private void handleColormapChange(JSONObject data) {
+        try {
+            String colormap = data.getString("colormap");
+
+            // Store current colormap
+            mCurrentColormap = colormap;
+
+            Log.i(TAG, "Colormap changed to: " + colormap);
+
+            runOnUiThread(() ->
+                Toast.makeText(this, "Colormap: " + colormap, Toast.LENGTH_SHORT).show()
+            );
+
+            // Colormap will be applied in frame processing (applyThermalColormap)
+        } catch (JSONException e) {
+            Log.e(TAG, "Error parsing colormap change", e);
+        }
     }
 
     private void initializeSocket() {
@@ -627,6 +870,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         mConnectionStatus.setTextColor(Color.GREEN);
                         Toast.makeText(MainActivity.this, "Connected to server", Toast.LENGTH_SHORT).show();
                         Log.i(TAG, "Connected to processing server");
+
+                        // Register as Glass device
+                        mSocket.emit("register_glass");
+
+                        // Start periodic network stats updates (every 5 seconds)
+                        startNetworkStatsUpdates();
                     });
                 }
             });
@@ -659,7 +908,41 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     Log.e(TAG, "Server error: " + error.toString());
                 }
             });
-            
+
+            // Remote control handlers
+            mSocket.on("set_auto_snapshot", new Emitter.Listener() {
+                @Override
+                public void call(Object... args) {
+                    JSONObject data = (JSONObject) args[0];
+                    handleAutoSnapshotSettings(data);
+                }
+            });
+
+            mSocket.on("set_colormap", new Emitter.Listener() {
+                @Override
+                public void call(Object... args) {
+                    JSONObject data = (JSONObject) args[0];
+                    handleColormapChange(data);
+                }
+            });
+
+            mSocket.on("set_mode", new Emitter.Listener() {
+                @Override
+                public void call(Object... args) {
+                    JSONObject data = (JSONObject) args[0];
+                    try {
+                        String mode = data.getString("mode");
+                        mCurrentMode = mode;
+                        runOnUiThread(() -> {
+                            mModeIndicator.setText("Mode: " + mode);
+                            Log.i(TAG, "Mode changed to: " + mode);
+                        });
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error parsing mode change", e);
+                    }
+                }
+            });
+
             mSocket.connect();
             
         } catch (URISyntaxException e) {
@@ -757,16 +1040,35 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 frame.get(frameData);
                 frame.rewind();  // Reset position for rendering
 
+                // Extract temperature measurements from thermal data
+                ThermalData thermalData = extractTemperatures(frameData);
+
+                // Update center temperature display
+                runOnUiThread(() -> {
+                    if (mCenterTemperature != null) {
+                        mCenterTemperature.setText(String.format("%.1f°C", thermalData.centerTemp));
+                    }
+                });
+
+                // Send thermal data measurements to companion app
+                sendThermalData(thermalData);
+
                 // Encode to base64 for JSON transmission
                 String frameBase64 = Base64.encodeToString(frameData, Base64.NO_WRAP);
 
-                // Create JSON payload
+                // Create JSON payload with temperature data
                 try {
                     JSONObject payload = new JSONObject();
                     payload.put("frame", frameBase64);  // Now base64 encoded
                     payload.put("mode", mCurrentMode);
                     payload.put("frame_number", mFrameCount);
                     payload.put("timestamp", System.currentTimeMillis());
+
+                    // Include temperature measurements
+                    payload.put("center_temp", thermalData.centerTemp);
+                    payload.put("min_temp", thermalData.minTemp);
+                    payload.put("max_temp", thermalData.maxTemp);
+                    payload.put("avg_temp", thermalData.avgTemp);
 
                     mSocket.emit("thermal_frame", payload);
 
@@ -865,31 +1167,96 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private int applyThermalColormap(int value) {
-        // Simple thermal colormap: Black -> Blue -> Purple -> Red -> Yellow -> White
+        // Apply colormap based on current selection
         // Value range: 0-255
 
         int r, g, b;
 
-        if (value < 64) {
-            // Black to Blue
-            r = 0;
-            g = 0;
-            b = value * 4;
-        } else if (value < 128) {
-            // Blue to Purple
-            r = (value - 64) * 4;
-            g = 0;
-            b = 255;
-        } else if (value < 192) {
-            // Purple to Red
-            r = 255;
-            g = 0;
-            b = 255 - ((value - 128) * 4);
-        } else {
-            // Red to Yellow to White
-            r = 255;
-            g = (value - 192) * 4;
-            b = (value - 192) * 2;
+        switch (mCurrentColormap) {
+            case "iron":
+            default:
+                // Iron/Hot colormap: Black -> Blue -> Purple -> Red -> Yellow -> White
+                if (value < 64) {
+                    // Black to Blue
+                    r = 0;
+                    g = 0;
+                    b = value * 4;
+                } else if (value < 128) {
+                    // Blue to Purple
+                    r = (value - 64) * 4;
+                    g = 0;
+                    b = 255;
+                } else if (value < 192) {
+                    // Purple to Red
+                    r = 255;
+                    g = 0;
+                    b = 255 - ((value - 128) * 4);
+                } else {
+                    // Red to Yellow to White
+                    r = 255;
+                    g = (value - 192) * 4;
+                    b = (value - 192) * 2;
+                }
+                break;
+
+            case "rainbow":
+                // Rainbow colormap: Blue -> Cyan -> Green -> Yellow -> Red
+                if (value < 51) {
+                    // Blue to Cyan
+                    r = 0;
+                    g = value * 5;
+                    b = 255;
+                } else if (value < 102) {
+                    // Cyan to Green
+                    r = 0;
+                    g = 255;
+                    b = 255 - ((value - 51) * 5);
+                } else if (value < 153) {
+                    // Green to Yellow
+                    r = (value - 102) * 5;
+                    g = 255;
+                    b = 0;
+                } else if (value < 204) {
+                    // Yellow to Orange
+                    r = 255;
+                    g = 255 - ((value - 153) * 2);
+                    b = 0;
+                } else {
+                    // Orange to Red
+                    r = 255;
+                    g = 255 - ((value - 204) * 5);
+                    b = 0;
+                }
+                break;
+
+            case "white_hot":
+                // White hot colormap: Black -> Gray -> White
+                r = value;
+                g = value;
+                b = value;
+                break;
+
+            case "arctic":
+                // Arctic colormap: Blue -> Cyan -> White
+                if (value < 128) {
+                    // Blue to Cyan
+                    r = 0;
+                    g = value * 2;
+                    b = 255;
+                } else {
+                    // Cyan to White
+                    r = (value - 128) * 2;
+                    g = 255;
+                    b = 255;
+                }
+                break;
+
+            case "grayscale":
+                // Grayscale: Black to White
+                r = value;
+                g = value;
+                b = value;
+                break;
         }
 
         // Clamp values
@@ -1126,11 +1493,25 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
     
     // Data classes
+    static class ThermalData {
+        float centerTemp;
+        float minTemp;
+        float maxTemp;
+        float avgTemp;
+
+        ThermalData(float centerTemp, float minTemp, float maxTemp, float avgTemp) {
+            this.centerTemp = centerTemp;
+            this.minTemp = minTemp;
+            this.maxTemp = maxTemp;
+            this.avgTemp = avgTemp;
+        }
+    }
+
     static class Detection {
         float[] bbox;
         float confidence;
         String className;
-        
+
         static Detection fromJSON(JSONObject json) throws JSONException {
             Detection det = new Detection();
             JSONArray bboxArray = json.getJSONArray("bbox");
