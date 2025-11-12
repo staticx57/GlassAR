@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple thermal camera icon for launcher -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Background circle -->
+    <path
+        android:fillColor="#FF4444"
+        android:pathData="M 54,54 m -45,0 a 45,45 0 1,0 90,0 a 45,45 0 1,0 -90,0" />
+
+    <!-- Camera body -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M 35,40 h 38 a 5,5 0 0,1 5,5 v 20 a 5,5 0 0,1 -5,5 h -38 a 5,5 0 0,1 -5,-5 v -20 a 5,5 0 0,1 5,-5 z" />
+
+    <!-- Camera lens -->
+    <path
+        android:fillColor="#333333"
+        android:pathData="M 54,54 m -10,0 a 10,10 0 1,0 20,0 a 10,10 0 1,0 -20,0" />
+
+    <!-- Lens inner circle -->
+    <path
+        android:fillColor="#666666"
+        android:pathData="M 54,54 m -6,0 a 6,6 0 1,0 12,0 a 6,6 0 1,0 -12,0" />
+
+    <!-- Heat waves -->
+    <path
+        android:strokeColor="#FF8800"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M 40,28 Q 42,22 44,28 T 48,28" />
+    <path
+        android:strokeColor="#FF8800"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M 50,26 Q 52,20 54,26 T 58,26" />
+    <path
+        android:strokeColor="#FF8800"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M 60,28 Q 62,22 64,28 T 68,28" />
+</vector>

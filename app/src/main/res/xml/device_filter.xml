@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- USB device filter for FLIR Boson 320 -->
+    <!-- Note: You may need to adjust vendor-id and product-id based on your specific camera -->
+    <!-- Common FLIR vendor ID is 0x09cb -->
+    <!-- To find your device IDs, use: adb shell lsusb -->
+
+    <usb-device vendor-id="2507" product-id="1792" /> <!-- FLIR Boson (common IDs) -->
+
+    <!-- Alternative: Allow any USB Video Class (UVC) device -->
+    <!-- This is more permissive and will work with most USB cameras -->
+    <!-- <usb-device class="14" subclass="1" protocol="0" /> -->
+</resources>

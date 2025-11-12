@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+    Layout for Google Glass Thermal AR Application
+    Optimized for Glass EE2 display (640x360)
+-->
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    tools:context=".MainActivity">
+
+    <!-- Main surface view for thermal display -->
+    <SurfaceView
+        android:id="@+id/surface_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_centerInParent="true" />
+
+    <!-- Status overlay (top bar) -->
+    <LinearLayout
+        android:id="@+id/status_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:background="#80000000">
+
+        <!-- Connection status indicator -->
+        <TextView
+            android:id="@+id/connection_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Disconnected"
+            android:textColor="#FF0000"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <!-- Mode indicator -->
+        <TextView
+            android:id="@+id/mode_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Building"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:paddingStart="16dp"
+            android:paddingEnd="8dp" />
+
+        <!-- Frame counter -->
+        <TextView
+            android:id="@+id/frame_counter"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:paddingStart="8dp" />
+    </LinearLayout>
+
+    <!-- Center crosshair/reticle -->
+    <ImageView
+        android:id="@+id/center_reticle"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_centerInParent="true"
+        android:src="@drawable/ic_crosshair"
+        android:alpha="0.5"
+        android:visibility="visible" />
+
+    <!-- Temperature readout at center -->
+    <TextView
+        android:id="@+id/center_temperature"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerInParent="true"
+        android:layout_marginTop="30dp"
+        android:text="--°C"
+        android:textColor="#00FF00"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:shadowColor="#000000"
+        android:shadowDx="1"
+        android:shadowDy="1"
+        android:shadowRadius="2" />
+
+    <!-- Alert/notification area (bottom) -->
+    <LinearLayout
+        android:id="@+id/alert_area"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:background="#80000000"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/alert_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Alert message"
+            android:textColor="#FF0000"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:gravity="center" />
+    </LinearLayout>
+
+    <!-- Recording indicator -->
+    <ImageView
+        android:id="@+id/recording_indicator"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_alignParentTop="true"
+        android:layout_alignParentEnd="true"
+        android:layout_margin="8dp"
+        android:src="@drawable/ic_record"
+        android:tint="#FF0000"
+        android:visibility="gone" />
+
+    <!-- Progress indicator for processing -->
+    <ProgressBar
+        android:id="@+id/processing_indicator"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_centerInParent="true"
+        android:indeterminate="true"
+        android:visibility="gone" />
+
+</RelativeLayout>

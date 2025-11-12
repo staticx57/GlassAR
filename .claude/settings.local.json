@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "WebSearch",
+      "Bash(where:*)",
+      "Bash(gradle wrapper:*)",
+      "Bash(\"C:\\Users\\stati\\Desktop\\Projects\\Glass AR\\local.properties\")",
+      "Bash(curl:*)",
+      "Bash(gradlew.bat assembleDebug:*)",
+      "Bash(cmd /c gradlew.bat assembleDebug)",
+      "Bash(cmd /c \"gradlew.bat assembleDebug\")",
+      "Bash(java -version:*)",
+      "Bash(if [ -d \"C:/Users/stati/AppData/Local/Android/Sdk\" ])",
+      "Bash(then echo \"Android SDK found\")",
+      "Bash(else echo \"Android SDK NOT found\")",
+      "Bash(fi)",
+      "Bash(powershell -Command \".\\gradlew.bat assembleDebug 2>&1 | Tee-Object -FilePath build.log\")",
+      "Bash(powershell -Command \"java -version 2>&1 | Select-String ''version''\")",
+      "Bash(powershell -Command \".\\gradlew.bat clean assembleDebug 2>&1 | Tee-Object -FilePath build.log\")",
+      "Bash(powershell -Command \".\\gradlew.bat assembleDebug --info 2>&1 | Select-String -Pattern ''BUILD|Task|Download'' | Tee-Object -FilePath build-summary.log\")",
+      "Bash(powershell -Command \".\\gradlew.bat clean\")",
+      "Bash(powershell -Command \".\\gradlew.bat assembleDebug --info 2>&1 | Select-String -Pattern ''BUILD|Task|Download|ERROR|FAILED|SUCCESS'' | Tee-Object -FilePath build-summary.log\")",
+      "Bash(powershell -Command \".\\gradlew.bat assembleDebug 2>&1\")",
+      "Bash(powershell -Command \".\\gradlew.bat clean assembleDebug 2>&1\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

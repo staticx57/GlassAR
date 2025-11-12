@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Crosshair/Reticle Icon for Thermal AR Glass
+    Place in: app/src/main/res/drawable/ic_crosshair.xml
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="40"
+    android:viewportHeight="40">
+
+    <!-- Outer circle -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.8"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M 20,20 m -15,0 a 15,15 0 1,0 30,0 a 15,15 0 1,0 -30,0" />
+
+    <!-- Inner circle -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeAlpha="0.6"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M 20,20 m -8,0 a 8,8 0 1,0 16,0 a 8,8 0 1,0 -16,0" />
+
+    <!-- Vertical crosshair line -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.8"
+        android:pathData="M 20,5 L 20,35" />
+
+    <!-- Horizontal crosshair line -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.8"
+        android:pathData="M 5,20 L 35,20" />
+
+    <!-- Center dot -->
+    <path
+        android:fillColor="#FF0000"
+        android:fillAlpha="0.8"
+        android:pathData="M 20,20 m -2,0 a 2,2 0 1,0 4,0 a 2,2 0 1,0 -4,0" />
+</vector>
