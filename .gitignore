@@ -91,3 +91,19 @@ lint/tmp/
 recordings/
 *.npy
 boson_calibration.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+companion_settings.json
+notes/
+snapshots/
+logs/
