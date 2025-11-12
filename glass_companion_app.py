@@ -34,16 +34,23 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QTabWidget, QGroupBox,
     QComboBox, QSpinBox, QCheckBox, QFileDialog, QMessageBox,
-    QSlider, QProgressBar, QListWidget, QSplitter, QStatusBar
+    QSlider, QProgressBar, QListWidget, QSplitter, QStatusBar, QShortcut
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QPalette
+from PyQt5.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QKeySequence
 
 import socketio
 import cv2
 import numpy as np
 from PIL import Image
 import base64
+
+# Enhancement widgets
+from glass_enhancements_p0_p1 import (
+    SystemMonitorWidget, SettingsManager, SessionNotesWidget,
+    TemperatureMeasurementWidget, AutoSnapshotWidget, ThermalColorbarWidget,
+    UIModeManager
+)
 
 # ==================== Configuration ====================
 
@@ -68,6 +75,9 @@ class SocketIOClient(QThread):
     frame_received = pyqtSignal(np.ndarray, dict)  # frame, annotations
     status_update = pyqtSignal(str, str)  # event, message
     glass_connected = pyqtSignal(bool)  # connected status
+    battery_status = pyqtSignal(int, bool)  # level, is_charging
+    network_stats = pyqtSignal(int, int)  # latency_ms, signal_strength
+    thermal_data = pyqtSignal(dict)  # thermal measurements
 
     def __init__(self, host='localhost', port=8080):
         super().__init__()
@@ -132,6 +142,34 @@ class SocketIOClient(QThread):
             except Exception as e:
                 print(f'[Companion] Error processing frame: {e}')
 
+        @self.sio.on('battery_status')
+        def on_battery_status(data):
+            """Receive battery status from Glass"""
+            try:
+                level = data.get('battery_level', 100)
+                charging = data.get('is_charging', False)
+                self.battery_status.emit(level, charging)
+            except Exception as e:
+                print(f'[Companion] Error processing battery status: {e}')
+
+        @self.sio.on('network_stats')
+        def on_network_stats(data):
+            """Receive network statistics"""
+            try:
+                latency = data.get('latency_ms', 0)
+                signal = data.get('signal_strength', 100)
+                self.network_stats.emit(latency, signal)
+            except Exception as e:
+                print(f'[Companion] Error processing network stats: {e}')
+
+        @self.sio.on('thermal_data')
+        def on_thermal_data(data):
+            """Receive thermal measurements"""
+            try:
+                self.thermal_data.emit(data)
+            except Exception as e:
+                print(f'[Companion] Error processing thermal data: {e}')
+
     def run(self):
         """Connect to server and run event loop"""
         self.running = True
@@ -177,12 +215,16 @@ class GlassCompanionApp(QMainWindow):
         self.setWindowTitle('Glass AR Companion - ThinkPad P16')
         self.setGeometry(100, 100, 1400, 900)
 
+        # Settings manager
+        self.settings_manager = SettingsManager()
+
         # State
         self.socket_client = None
         self.server_process = None
         self.is_recording = False
         self.recording_frames = []
         self.glass_connected = False
+        self.ui_mode = 'simple'  # Start in simple mode
 
         # Setup UI
         self.setup_ui()
@@ -190,6 +232,12 @@ class GlassCompanionApp(QMainWindow):
 
         # Apply dark theme
         self.apply_dark_theme()
+
+        # Load persistent settings
+        self.load_persistent_settings()
+
+        # Setup keyboard shortcuts
+        self.setup_keyboard_shortcuts()
 
         print('[Companion App] Initialized')
 
@@ -242,6 +290,15 @@ class GlassCompanionApp(QMainWindow):
         layout.addWidget(self.video_label, 1)
         layout.addLayout(info_layout)
 
+        # Thermal colorbar
+        colorbar_group = QGroupBox('Thermal Colormap')
+        colorbar_layout = QVBoxLayout()
+        self.colorbar_widget = ThermalColorbarWidget()
+        self.colorbar_widget.colormap_changed.connect(self.on_colormap_changed)
+        colorbar_layout.addWidget(self.colorbar_widget)
+        colorbar_group.setLayout(colorbar_layout)
+        layout.addWidget(colorbar_group)
+
         return panel
 
     def create_control_panel(self):
@@ -249,16 +306,21 @@ class GlassCompanionApp(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
+        # UI Mode selector
+        self.ui_mode_manager = UIModeManager()
+        self.ui_mode_manager.mode_changed.connect(self.on_ui_mode_changed)
+        layout.addWidget(self.ui_mode_manager)
+
         # Tabs for different sections
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
 
-        tabs.addTab(self.create_connection_tab(), 'Connection')
-        tabs.addTab(self.create_control_tab(), 'Controls')
-        tabs.addTab(self.create_recording_tab(), 'Recording')
-        tabs.addTab(self.create_service_tab(), 'Server')
-        tabs.addTab(self.create_logs_tab(), 'Logs')
+        self.tabs.addTab(self.create_connection_tab(), 'Connection')
+        self.tabs.addTab(self.create_control_tab(), 'Controls')
+        self.tabs.addTab(self.create_recording_tab(), 'Recording')
+        self.tabs.addTab(self.create_service_tab(), 'Server')
+        self.tabs.addTab(self.create_logs_tab(), 'Logs')
 
-        layout.addWidget(tabs)
+        layout.addWidget(self.tabs)
 
         return panel
 
@@ -306,6 +368,10 @@ class GlassCompanionApp(QMainWindow):
         group.setLayout(group_layout)
         layout.addWidget(group)
 
+        # System monitor widget
+        self.system_monitor = SystemMonitorWidget()
+        layout.addWidget(self.system_monitor)
+
         layout.addStretch()
         return tab
 
@@ -346,7 +412,7 @@ class GlassCompanionApp(QMainWindow):
         layout.addWidget(capture_group)
 
         # Detection navigation
-        detection_group = QGroupBox('Detection Navigation')
+        self.detection_group = QGroupBox('Detection Navigation')
         detection_layout = QVBoxLayout()
 
         nav_layout = QHBoxLayout()
@@ -358,19 +424,36 @@ class GlassCompanionApp(QMainWindow):
         nav_layout.addWidget(next_btn)
 
         detection_layout.addLayout(nav_layout)
-        detection_group.setLayout(detection_layout)
-        layout.addWidget(detection_group)
+        self.detection_group.setLayout(detection_layout)
+        layout.addWidget(self.detection_group)
 
         # Overlay controls
-        overlay_group = QGroupBox('Overlay')
+        self.overlay_group = QGroupBox('Overlay')
         overlay_layout = QVBoxLayout()
 
         toggle_overlay_btn = QPushButton('Toggle Overlay')
         toggle_overlay_btn.clicked.connect(self.toggle_overlay)
         overlay_layout.addWidget(toggle_overlay_btn)
 
-        overlay_group.setLayout(overlay_layout)
-        layout.addWidget(overlay_group)
+        self.overlay_group.setLayout(overlay_layout)
+        layout.addWidget(self.overlay_group)
+
+        # Temperature measurement widget
+        self.temp_group = QGroupBox('Temperature Measurements')
+        temp_group_layout = QVBoxLayout()
+        self.temp_widget = TemperatureMeasurementWidget()
+        temp_group_layout.addWidget(self.temp_widget)
+        self.temp_group.setLayout(temp_group_layout)
+        layout.addWidget(self.temp_group)
+
+        # Auto-snapshot configuration
+        self.auto_snap_group = QGroupBox('Auto-Snapshot')
+        auto_snap_layout = QVBoxLayout()
+        self.auto_snapshot = AutoSnapshotWidget()
+        self.auto_snapshot.settings_changed.connect(self.on_auto_snapshot_changed)
+        auto_snap_layout.addWidget(self.auto_snapshot)
+        self.auto_snap_group.setLayout(auto_snap_layout)
+        layout.addWidget(self.auto_snap_group)
 
         layout.addStretch()
         return tab
@@ -416,6 +499,14 @@ class GlassCompanionApp(QMainWindow):
         recordings_layout.addLayout(list_buttons)
         recordings_group.setLayout(recordings_layout)
         layout.addWidget(recordings_group)
+
+        # Session notes widget
+        notes_group = QGroupBox('Session Notes')
+        notes_layout = QVBoxLayout()
+        self.notes_widget = SessionNotesWidget()
+        notes_layout.addWidget(self.notes_widget)
+        notes_group.setLayout(notes_layout)
+        layout.addWidget(notes_group)
 
         return tab
 
@@ -557,6 +648,100 @@ class GlassCompanionApp(QMainWindow):
         """
         self.setStyleSheet(dark_stylesheet)
 
+    def setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts"""
+        # Recording shortcuts
+        QShortcut(QKeySequence('Ctrl+R'), self).activated.connect(self.toggle_recording)
+        QShortcut(QKeySequence('Ctrl+S'), self).activated.connect(self.take_snapshot)
+
+        # View shortcuts
+        QShortcut(QKeySequence('F11'), self).activated.connect(self.toggle_fullscreen)
+        QShortcut(QKeySequence('Ctrl+F'), self).activated.connect(self.toggle_fullscreen)
+
+        # Control shortcuts
+        QShortcut(QKeySequence('Ctrl+O'), self).activated.connect(self.toggle_overlay)
+        QShortcut(QKeySequence('Left'), self).activated.connect(self.previous_detection)
+        QShortcut(QKeySequence('Right'), self).activated.connect(self.next_detection)
+        QShortcut(QKeySequence('Ctrl+Left'), self).activated.connect(self.previous_detection)
+        QShortcut(QKeySequence('Ctrl+Right'), self).activated.connect(self.next_detection)
+
+        # Mode shortcuts
+        QShortcut(QKeySequence('1'), self).activated.connect(lambda: self.mode_selector.setCurrentIndex(0))
+        QShortcut(QKeySequence('2'), self).activated.connect(lambda: self.mode_selector.setCurrentIndex(1))
+        QShortcut(QKeySequence('3'), self).activated.connect(lambda: self.mode_selector.setCurrentIndex(2))
+
+        # Connection shortcuts
+        QShortcut(QKeySequence('Ctrl+C'), self).activated.connect(self.toggle_connection)
+
+        # Navigation shortcuts
+        QShortcut(QKeySequence('Ctrl+T'), self).activated.connect(lambda: self.tabs.setCurrentIndex(0))
+        QShortcut(QKeySequence('Ctrl+1'), self).activated.connect(lambda: self.tabs.setCurrentIndex(0))
+        QShortcut(QKeySequence('Ctrl+2'), self).activated.connect(lambda: self.tabs.setCurrentIndex(1))
+        QShortcut(QKeySequence('Ctrl+3'), self).activated.connect(lambda: self.tabs.setCurrentIndex(2))
+        QShortcut(QKeySequence('Ctrl+4'), self).activated.connect(lambda: self.tabs.setCurrentIndex(3))
+        QShortcut(QKeySequence('Ctrl+5'), self).activated.connect(lambda: self.tabs.setCurrentIndex(4))
+
+        # Notes shortcut
+        QShortcut(QKeySequence('Ctrl+N'), self).activated.connect(lambda: self.notes_widget.note_input.setFocus())
+
+        # Help shortcut
+        QShortcut(QKeySequence('F1'), self).activated.connect(self.show_shortcuts_help)
+
+        self.log('Keyboard shortcuts activated')
+
+    def toggle_fullscreen(self):
+        """Toggle fullscreen mode"""
+        if self.isFullScreen():
+            self.showNormal()
+            self.log('Fullscreen mode: OFF')
+        else:
+            self.showFullScreen()
+            self.log('Fullscreen mode: ON')
+
+    def show_shortcuts_help(self):
+        """Show keyboard shortcuts help dialog"""
+        help_text = """
+<h2>Keyboard Shortcuts</h2>
+
+<h3>Recording & Capture</h3>
+<ul>
+<li><b>Ctrl+R</b> - Toggle recording</li>
+<li><b>Ctrl+S</b> - Take snapshot</li>
+</ul>
+
+<h3>View</h3>
+<ul>
+<li><b>F11</b> or <b>Ctrl+F</b> - Toggle fullscreen</li>
+<li><b>Ctrl+O</b> - Toggle overlay</li>
+</ul>
+
+<h3>Navigation</h3>
+<ul>
+<li><b>Left Arrow</b> or <b>Ctrl+Left</b> - Previous detection</li>
+<li><b>Right Arrow</b> or <b>Ctrl+Right</b> - Next detection</li>
+<li><b>Ctrl+1</b> - Connection tab</li>
+<li><b>Ctrl+2</b> - Controls tab</li>
+<li><b>Ctrl+3</b> - Recording tab</li>
+<li><b>Ctrl+4</b> - Server tab</li>
+<li><b>Ctrl+5</b> - Logs tab</li>
+</ul>
+
+<h3>Mode Selection</h3>
+<ul>
+<li><b>1</b> - Thermal Only</li>
+<li><b>2</b> - Thermal + RGB Fusion</li>
+<li><b>3</b> - Advanced Inspection</li>
+</ul>
+
+<h3>Other</h3>
+<ul>
+<li><b>Ctrl+C</b> - Toggle connection</li>
+<li><b>Ctrl+N</b> - Focus notes input</li>
+<li><b>F1</b> - Show this help</li>
+</ul>
+        """
+        QMessageBox.information(self, 'Keyboard Shortcuts', help_text)
+
     # ==================== Connection Methods ====================
 
     def toggle_connection(self):
@@ -577,7 +762,13 @@ class GlassCompanionApp(QMainWindow):
         self.socket_client.frame_received.connect(self.update_video)
         self.socket_client.status_update.connect(self.handle_status_update)
         self.socket_client.glass_connected.connect(self.handle_glass_connection)
+        self.socket_client.battery_status.connect(self.handle_battery_status)
+        self.socket_client.network_stats.connect(self.handle_network_stats)
+        self.socket_client.thermal_data.connect(self.handle_thermal_data)
         self.socket_client.start()
+
+        # Register as companion app
+        self.socket_client.send_command('register_companion')
 
         self.connect_btn.setText('Disconnect')
         self.connection_status.setText('🟢 Connected')
@@ -612,6 +803,110 @@ class GlassCompanionApp(QMainWindow):
             self.glass_status.setText('⚫ Glass: Not Connected')
             self.glass_status.setStyleSheet('color: #ff6b6b;')
             self.log('Glass device disconnected')
+
+    def handle_battery_status(self, level, is_charging):
+        """Handle battery status update from Glass"""
+        self.system_monitor.update_battery(level, is_charging)
+        if level < 20:
+            self.statusBar.showMessage(f'⚠️ Low battery: {level}%', 5000)
+
+    def handle_network_stats(self, latency_ms, signal_strength):
+        """Handle network statistics update"""
+        self.system_monitor.update_network(latency_ms, signal_strength)
+        if latency_ms > 200:
+            self.statusBar.showMessage(f'⚠️ High latency: {latency_ms}ms', 3000)
+
+    def handle_thermal_data(self, data):
+        """Handle thermal measurement data"""
+        center = data.get('center_temp', 0)
+        min_temp = data.get('min_temp', 0)
+        max_temp = data.get('max_temp', 0)
+        avg = data.get('avg_temp', 0)
+        self.temp_widget.update_temperatures(center, min_temp, max_temp, avg)
+
+        # Update colorbar temperature range
+        temp_unit = self.temp_widget.temp_unit
+        self.colorbar_widget.set_temperature_range(min_temp, max_temp, temp_unit)
+
+    def on_colormap_changed(self, colormap):
+        """Handle colormap change"""
+        if self.socket_client:
+            self.socket_client.send_command('set_colormap', {'colormap': colormap})
+            self.log(f'Colormap changed to: {colormap}')
+            self.settings_manager.set('display', 'colormap', colormap)
+
+    def on_ui_mode_changed(self, mode):
+        """Handle UI mode change"""
+        self.ui_mode = mode
+        self.log(f'UI mode changed to: {mode}')
+
+        # In Simple mode: hide advanced features
+        # In Advanced mode: show all features
+        is_advanced = (mode == 'advanced')
+
+        # Hide/show tabs based on mode
+        # In Simple mode, only show Connection and Controls tabs
+        if mode == 'simple':
+            # Hide Recording, Server, and Logs tabs
+            self.tabs.setTabVisible(2, False)  # Recording
+            self.tabs.setTabVisible(3, False)  # Server
+            self.tabs.setTabVisible(4, False)  # Logs
+
+            # Simplify mode selector to only Thermal and Fusion
+            current_index = self.mode_selector.currentIndex()
+            self.mode_selector.clear()
+            self.mode_selector.addItems([
+                'Thermal Only',
+                'Thermal + RGB Fusion'
+            ])
+            # Restore index if it was 0 or 1
+            if current_index in [0, 1]:
+                self.mode_selector.setCurrentIndex(current_index)
+            else:
+                self.mode_selector.setCurrentIndex(0)
+
+            # Hide advanced controls
+            if hasattr(self, 'detection_group'):
+                self.detection_group.hide()
+            if hasattr(self, 'overlay_group'):
+                self.overlay_group.hide()
+            if hasattr(self, 'temp_group'):
+                self.temp_group.hide()
+            if hasattr(self, 'auto_snap_group'):
+                self.auto_snap_group.hide()
+
+            self.statusBar.showMessage('Simple mode: Showing essential controls only', 3000)
+
+        else:  # Advanced mode
+            # Show all tabs
+            self.tabs.setTabVisible(2, True)  # Recording
+            self.tabs.setTabVisible(3, True)  # Server
+            self.tabs.setTabVisible(4, True)  # Logs
+
+            # Restore full mode selector
+            current_index = self.mode_selector.currentIndex()
+            self.mode_selector.clear()
+            self.mode_selector.addItems([
+                'Thermal Only',
+                'Thermal + RGB Fusion',
+                'Advanced Inspection'
+            ])
+            self.mode_selector.setCurrentIndex(current_index)
+
+            # Show advanced controls
+            if hasattr(self, 'detection_group'):
+                self.detection_group.show()
+            if hasattr(self, 'overlay_group'):
+                self.overlay_group.show()
+            if hasattr(self, 'temp_group'):
+                self.temp_group.show()
+            if hasattr(self, 'auto_snap_group'):
+                self.auto_snap_group.show()
+
+            self.statusBar.showMessage('Advanced mode: All features available', 3000)
+
+        # Save preference
+        self.settings_manager.set('display', 'ui_mode', mode)
 
     # ==================== Video Display ====================
 
@@ -827,10 +1122,88 @@ class GlassCompanionApp(QMainWindow):
 
         QMessageBox.information(self, 'Log Saved', f'Log saved to:\n{filepath}')
 
+    def on_auto_snapshot_changed(self, settings):
+        """Handle auto-snapshot settings change"""
+        if self.socket_client:
+            self.socket_client.send_command('set_auto_snapshot', settings)
+            self.log(f'Auto-snapshot settings updated: {settings}')
+
+    # ==================== Settings Persistence ====================
+
+    def load_persistent_settings(self):
+        """Load settings from SettingsManager"""
+        # Server settings
+        host = self.settings_manager.get('server', 'host', 'localhost')
+        port = self.settings_manager.get('server', 'port', 8080)
+
+        # Update host combo box with recent connections
+        recent_connections = self.settings_manager.get_recent_connections()
+        self.host_input.clear()
+        self.host_input.addItems(recent_connections)
+        self.host_input.setCurrentText(host)
+        self.port_input.setValue(port)
+
+        # Display settings
+        colormap = self.settings_manager.get('display', 'colormap', 'iron')
+        temp_unit = self.settings_manager.get('display', 'temperature_unit', 'celsius')
+        ui_mode = self.settings_manager.get('display', 'ui_mode', 'simple')
+        self.temp_widget.set_unit(temp_unit)
+        self.colorbar_widget.set_colormap(colormap)
+        self.ui_mode_manager.set_mode(ui_mode)
+
+        # Auto-snapshot settings
+        auto_snap_settings = {
+            'enabled': self.settings_manager.get('capture', 'auto_snapshot_enabled', False),
+            'temp_threshold': self.settings_manager.get('capture', 'auto_snapshot_threshold', 80.0),
+            'confidence_threshold': self.settings_manager.get('capture', 'confidence_threshold', 0.7),
+            'cooldown_seconds': self.settings_manager.get('capture', 'cooldown_seconds', 5)
+        }
+        self.auto_snapshot.set_settings(auto_snap_settings)
+
+        # Window geometry
+        geometry = self.settings_manager.get('window', 'geometry')
+        position = self.settings_manager.get('window', 'position')
+        if geometry:
+            self.restoreGeometry(bytes.fromhex(geometry))
+        if position:
+            self.move(*position)
+
+        self.log('Settings loaded successfully')
+
+    def save_persistent_settings(self):
+        """Save settings to SettingsManager"""
+        # Server settings
+        host = self.host_input.currentText()
+        port = self.port_input.value()
+        self.settings_manager.set('server', 'host', host)
+        self.settings_manager.set('server', 'port', port)
+        self.settings_manager.add_recent_connection(host)
+
+        # Display settings
+        temp_unit = self.temp_widget.temp_unit
+        self.settings_manager.set('display', 'temperature_unit', temp_unit)
+
+        # Auto-snapshot settings
+        auto_snap = self.auto_snapshot.get_settings()
+        self.settings_manager.set('capture', 'auto_snapshot_enabled', auto_snap['enabled'])
+        self.settings_manager.set('capture', 'auto_snapshot_threshold', auto_snap['temp_threshold'])
+        self.settings_manager.set('capture', 'confidence_threshold', auto_snap['confidence_threshold'])
+        self.settings_manager.set('capture', 'cooldown_seconds', auto_snap['cooldown_seconds'])
+
+        # Window geometry
+        self.settings_manager.set('window', 'geometry', self.saveGeometry().toHex().data().decode())
+        pos = self.pos()
+        self.settings_manager.set('window', 'position', [pos.x(), pos.y()])
+
+        self.log('Settings saved successfully')
+
     # ==================== Cleanup ====================
 
     def closeEvent(self, event):
         """Handle application close"""
+        # Save persistent settings
+        self.save_persistent_settings()
+
         # Stop recording if active
         if self.is_recording:
             self.stop_recording()

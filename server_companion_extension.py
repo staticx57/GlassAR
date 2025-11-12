@@ -5,6 +5,9 @@ Adds Socket.IO events and handlers for remote control and monitoring
 via the companion app running on ThinkPad P16.
 """
 
+import time
+from flask import request
+
 def setup_companion_events(socketio, processor):
     """
     Setup Socket.IO events for companion app integration
@@ -72,6 +75,15 @@ def setup_companion_events(socketio, processor):
             # Process frame with AI (existing processor logic)
             # This would call the existing Boson320Processor methods
 
+            # Extract thermal data for temperature measurements
+            thermal_measurements = {
+                'center_temp': data.get('center_temp', 0),
+                'min_temp': data.get('min_temp', 0),
+                'max_temp': data.get('max_temp', 0),
+                'avg_temp': data.get('avg_temp', 0),
+                'timestamp': time.time()
+            }
+
             # For now, just forward with annotations
             processed_data = {
                 'frame': data.get('frame'),
@@ -89,9 +101,37 @@ def setup_companion_events(socketio, processor):
             socketio.emit('thermal_frame_processed', processed_data,
                          room=None, skip_sid=sid)
 
+            # Broadcast thermal measurements separately
+            socketio.emit('thermal_data', thermal_measurements,
+                         room=None, skip_sid=sid)
+
         except Exception as e:
             print(f'[Companion] Error processing frame: {e}')
             socketio.emit('error', {'message': str(e)}, room=sid)
+
+    @socketio.on('battery_status')
+    def handle_battery_status(data):
+        """
+        Receive battery status from Glass and broadcast to companions
+        """
+        sid = request.sid
+
+        # Broadcast battery status to all companion apps
+        socketio.emit('battery_status', data, room=None, skip_sid=sid)
+        print(f'[Companion] Battery status: {data.get("battery_level")}% '
+              f'(charging: {data.get("is_charging", False)})')
+
+    @socketio.on('network_stats')
+    def handle_network_stats(data):
+        """
+        Receive network statistics from Glass and broadcast to companions
+        """
+        sid = request.sid
+
+        # Broadcast network stats to all companion apps
+        socketio.emit('network_stats', data, room=None, skip_sid=sid)
+        print(f'[Companion] Network stats: {data.get("latency_ms")}ms latency, '
+              f'{data.get("signal_strength")}% signal')
 
     # ===== Remote Control Commands =====
 
@@ -147,6 +187,25 @@ def setup_companion_events(socketio, processor):
         """Toggle overlay on Glass"""
         for glass_sid in glass_clients:
             socketio.emit('toggle_overlay', {}, room=glass_sid)
+
+    @socketio.on('set_auto_snapshot')
+    def handle_set_auto_snapshot(data):
+        """Configure auto-snapshot settings on Glass"""
+        for glass_sid in glass_clients:
+            socketio.emit('set_auto_snapshot', data, room=glass_sid)
+
+        print(f'[Companion] Auto-snapshot settings updated: {data}')
+
+    @socketio.on('set_colormap')
+    def handle_set_colormap(data):
+        """Change thermal colormap on Glass"""
+        colormap = data.get('colormap', 'iron')
+
+        # Send to all Glass clients
+        for glass_sid in glass_clients:
+            socketio.emit('set_colormap', {'colormap': colormap}, room=glass_sid)
+
+        print(f'[Companion] Colormap changed to: {colormap}')
 
     # ===== System Information =====
 
