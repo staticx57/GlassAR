@@ -45,6 +45,12 @@ import numpy as np
 from PIL import Image
 import base64
 
+# Enhancement widgets
+from glass_enhancements_p0_p1 import (
+    SystemMonitorWidget, SettingsManager, SessionNotesWidget,
+    TemperatureMeasurementWidget, AutoSnapshotWidget
+)
+
 # ==================== Configuration ====================
 
 class Config:
@@ -68,6 +74,9 @@ class SocketIOClient(QThread):
     frame_received = pyqtSignal(np.ndarray, dict)  # frame, annotations
     status_update = pyqtSignal(str, str)  # event, message
     glass_connected = pyqtSignal(bool)  # connected status
+    battery_status = pyqtSignal(int, bool)  # level, is_charging
+    network_stats = pyqtSignal(int, int)  # latency_ms, signal_strength
+    thermal_data = pyqtSignal(dict)  # thermal measurements
 
     def __init__(self, host='localhost', port=8080):
         super().__init__()
@@ -132,6 +141,34 @@ class SocketIOClient(QThread):
             except Exception as e:
                 print(f'[Companion] Error processing frame: {e}')
 
+        @self.sio.on('battery_status')
+        def on_battery_status(data):
+            """Receive battery status from Glass"""
+            try:
+                level = data.get('battery_level', 100)
+                charging = data.get('is_charging', False)
+                self.battery_status.emit(level, charging)
+            except Exception as e:
+                print(f'[Companion] Error processing battery status: {e}')
+
+        @self.sio.on('network_stats')
+        def on_network_stats(data):
+            """Receive network statistics"""
+            try:
+                latency = data.get('latency_ms', 0)
+                signal = data.get('signal_strength', 100)
+                self.network_stats.emit(latency, signal)
+            except Exception as e:
+                print(f'[Companion] Error processing network stats: {e}')
+
+        @self.sio.on('thermal_data')
+        def on_thermal_data(data):
+            """Receive thermal measurements"""
+            try:
+                self.thermal_data.emit(data)
+            except Exception as e:
+                print(f'[Companion] Error processing thermal data: {e}')
+
     def run(self):
         """Connect to server and run event loop"""
         self.running = True
@@ -177,6 +214,9 @@ class GlassCompanionApp(QMainWindow):
         self.setWindowTitle('Glass AR Companion - ThinkPad P16')
         self.setGeometry(100, 100, 1400, 900)
 
+        # Settings manager
+        self.settings_manager = SettingsManager()
+
         # State
         self.socket_client = None
         self.server_process = None
@@ -190,6 +230,9 @@ class GlassCompanionApp(QMainWindow):
 
         # Apply dark theme
         self.apply_dark_theme()
+
+        # Load persistent settings
+        self.load_persistent_settings()
 
         print('[Companion App] Initialized')
 
@@ -306,6 +349,10 @@ class GlassCompanionApp(QMainWindow):
         group.setLayout(group_layout)
         layout.addWidget(group)
 
+        # System monitor widget
+        self.system_monitor = SystemMonitorWidget()
+        layout.addWidget(self.system_monitor)
+
         layout.addStretch()
         return tab
 
@@ -372,6 +419,23 @@ class GlassCompanionApp(QMainWindow):
         overlay_group.setLayout(overlay_layout)
         layout.addWidget(overlay_group)
 
+        # Temperature measurement widget
+        temp_group = QGroupBox('Temperature Measurements')
+        temp_group_layout = QVBoxLayout()
+        self.temp_widget = TemperatureMeasurementWidget()
+        temp_group_layout.addWidget(self.temp_widget)
+        temp_group.setLayout(temp_group_layout)
+        layout.addWidget(temp_group)
+
+        # Auto-snapshot configuration
+        auto_snap_group = QGroupBox('Auto-Snapshot')
+        auto_snap_layout = QVBoxLayout()
+        self.auto_snapshot = AutoSnapshotWidget()
+        self.auto_snapshot.settings_changed.connect(self.on_auto_snapshot_changed)
+        auto_snap_layout.addWidget(self.auto_snapshot)
+        auto_snap_group.setLayout(auto_snap_layout)
+        layout.addWidget(auto_snap_group)
+
         layout.addStretch()
         return tab
 
@@ -416,6 +480,14 @@ class GlassCompanionApp(QMainWindow):
         recordings_layout.addLayout(list_buttons)
         recordings_group.setLayout(recordings_layout)
         layout.addWidget(recordings_group)
+
+        # Session notes widget
+        notes_group = QGroupBox('Session Notes')
+        notes_layout = QVBoxLayout()
+        self.notes_widget = SessionNotesWidget()
+        notes_layout.addWidget(self.notes_widget)
+        notes_group.setLayout(notes_layout)
+        layout.addWidget(notes_group)
 
         return tab
 
@@ -577,7 +649,13 @@ class GlassCompanionApp(QMainWindow):
         self.socket_client.frame_received.connect(self.update_video)
         self.socket_client.status_update.connect(self.handle_status_update)
         self.socket_client.glass_connected.connect(self.handle_glass_connection)
+        self.socket_client.battery_status.connect(self.handle_battery_status)
+        self.socket_client.network_stats.connect(self.handle_network_stats)
+        self.socket_client.thermal_data.connect(self.handle_thermal_data)
         self.socket_client.start()
+
+        # Register as companion app
+        self.socket_client.send_command('register_companion')
 
         self.connect_btn.setText('Disconnect')
         self.connection_status.setText('🟢 Connected')
@@ -612,6 +690,26 @@ class GlassCompanionApp(QMainWindow):
             self.glass_status.setText('⚫ Glass: Not Connected')
             self.glass_status.setStyleSheet('color: #ff6b6b;')
             self.log('Glass device disconnected')
+
+    def handle_battery_status(self, level, is_charging):
+        """Handle battery status update from Glass"""
+        self.system_monitor.update_battery(level, is_charging)
+        if level < 20:
+            self.statusBar.showMessage(f'⚠️ Low battery: {level}%', 5000)
+
+    def handle_network_stats(self, latency_ms, signal_strength):
+        """Handle network statistics update"""
+        self.system_monitor.update_network(latency_ms, signal_strength)
+        if latency_ms > 200:
+            self.statusBar.showMessage(f'⚠️ High latency: {latency_ms}ms', 3000)
+
+    def handle_thermal_data(self, data):
+        """Handle thermal measurement data"""
+        center = data.get('center_temp', 0)
+        min_temp = data.get('min_temp', 0)
+        max_temp = data.get('max_temp', 0)
+        avg = data.get('avg_temp', 0)
+        self.temp_widget.update_temperatures(center, min_temp, max_temp, avg)
 
     # ==================== Video Display ====================
 
@@ -827,10 +925,85 @@ class GlassCompanionApp(QMainWindow):
 
         QMessageBox.information(self, 'Log Saved', f'Log saved to:\n{filepath}')
 
+    def on_auto_snapshot_changed(self, settings):
+        """Handle auto-snapshot settings change"""
+        if self.socket_client:
+            self.socket_client.send_command('set_auto_snapshot', settings)
+            self.log(f'Auto-snapshot settings updated: {settings}')
+
+    # ==================== Settings Persistence ====================
+
+    def load_persistent_settings(self):
+        """Load settings from SettingsManager"""
+        # Server settings
+        host = self.settings_manager.get('server', 'host', 'localhost')
+        port = self.settings_manager.get('server', 'port', 8080)
+
+        # Update host combo box with recent connections
+        recent_connections = self.settings_manager.get_recent_connections()
+        self.host_input.clear()
+        self.host_input.addItems(recent_connections)
+        self.host_input.setCurrentText(host)
+        self.port_input.setValue(port)
+
+        # Display settings
+        colormap = self.settings_manager.get('display', 'colormap', 'iron')
+        temp_unit = self.settings_manager.get('display', 'temperature_unit', 'celsius')
+        self.temp_widget.set_unit(temp_unit)
+
+        # Auto-snapshot settings
+        auto_snap_settings = {
+            'enabled': self.settings_manager.get('capture', 'auto_snapshot_enabled', False),
+            'temp_threshold': self.settings_manager.get('capture', 'auto_snapshot_threshold', 80.0),
+            'confidence_threshold': self.settings_manager.get('capture', 'confidence_threshold', 0.7),
+            'cooldown_seconds': self.settings_manager.get('capture', 'cooldown_seconds', 5)
+        }
+        self.auto_snapshot.set_settings(auto_snap_settings)
+
+        # Window geometry
+        geometry = self.settings_manager.get('window', 'geometry')
+        position = self.settings_manager.get('window', 'position')
+        if geometry:
+            self.restoreGeometry(bytes.fromhex(geometry))
+        if position:
+            self.move(*position)
+
+        self.log('Settings loaded successfully')
+
+    def save_persistent_settings(self):
+        """Save settings to SettingsManager"""
+        # Server settings
+        host = self.host_input.currentText()
+        port = self.port_input.value()
+        self.settings_manager.set('server', 'host', host)
+        self.settings_manager.set('server', 'port', port)
+        self.settings_manager.add_recent_connection(host)
+
+        # Display settings
+        temp_unit = self.temp_widget.temp_unit
+        self.settings_manager.set('display', 'temperature_unit', temp_unit)
+
+        # Auto-snapshot settings
+        auto_snap = self.auto_snapshot.get_settings()
+        self.settings_manager.set('capture', 'auto_snapshot_enabled', auto_snap['enabled'])
+        self.settings_manager.set('capture', 'auto_snapshot_threshold', auto_snap['temp_threshold'])
+        self.settings_manager.set('capture', 'confidence_threshold', auto_snap['confidence_threshold'])
+        self.settings_manager.set('capture', 'cooldown_seconds', auto_snap['cooldown_seconds'])
+
+        # Window geometry
+        self.settings_manager.set('window', 'geometry', self.saveGeometry().toHex().data().decode())
+        pos = self.pos()
+        self.settings_manager.set('window', 'position', [pos.x(), pos.y()])
+
+        self.log('Settings saved successfully')
+
     # ==================== Cleanup ====================
 
     def closeEvent(self, event):
         """Handle application close"""
+        # Save persistent settings
+        self.save_persistent_settings()
+
         # Stop recording if active
         if self.is_recording:
             self.stop_recording()

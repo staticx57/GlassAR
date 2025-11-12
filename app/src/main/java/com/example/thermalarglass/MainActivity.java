@@ -73,6 +73,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private TextView mModeIndicator;
     private TextView mFrameCounter;
     private TextView mCenterTemperature;
+    private TextView mBatteryIndicator;
+    private TextView mNetworkIndicator;
     private ImageView mCenterReticle;
     private ImageView mRecordingIndicator;
     private LinearLayout mAlertArea;
@@ -123,6 +125,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mModeIndicator = findViewById(R.id.mode_indicator);
         mFrameCounter = findViewById(R.id.frame_counter);
         mCenterTemperature = findViewById(R.id.center_temperature);
+        mBatteryIndicator = findViewById(R.id.battery_indicator);
+        mNetworkIndicator = findViewById(R.id.network_indicator);
         mCenterReticle = findViewById(R.id.center_reticle);
         mRecordingIndicator = findViewById(R.id.recording_indicator);
         mAlertArea = findViewById(R.id.alert_area);
@@ -499,6 +503,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (level != -1 && scale != -1) {
                     mBatteryLevel = (int) ((level / (float) scale) * 100);
 
+                    // Update battery indicator
+                    updateBatteryIndicator();
+
+                    // Send battery status to server
+                    sendBatteryStatus();
+
                     // Warn user if battery is low
                     if (mBatteryLevel < 20 && mBatteryLevel % 5 == 0) {
                         runOnUiThread(() ->
@@ -514,7 +524,96 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
         registerReceiver(mBatteryReceiver, filter);
     }
-    
+
+    /**
+     * Update battery indicator UI
+     */
+    private void updateBatteryIndicator() {
+        runOnUiThread(() -> {
+            if (mBatteryIndicator == null) return;
+
+            String icon;
+            int color;
+
+            if (mBatteryLevel > 80) {
+                icon = "🔋"; // Full battery
+                color = Color.parseColor("#00FF00"); // Green
+            } else if (mBatteryLevel > 50) {
+                icon = "🔋"; // Good battery
+                color = Color.parseColor("#FFFF00"); // Yellow
+            } else if (mBatteryLevel > 20) {
+                icon = "🔋"; // Low battery
+                color = Color.parseColor("#FFA500"); // Orange
+            } else {
+                icon = "🪫"; // Critical battery
+                color = Color.parseColor("#FF0000"); // Red
+            }
+
+            mBatteryIndicator.setText(icon + " " + mBatteryLevel + "%");
+            mBatteryIndicator.setTextColor(color);
+        });
+    }
+
+    /**
+     * Send battery status to server/companion app
+     */
+    private void sendBatteryStatus() {
+        if (mSocket != null && mConnected) {
+            try {
+                JSONObject data = new JSONObject();
+                data.put("battery_level", mBatteryLevel);
+                data.put("is_charging", isCharging());
+                data.put("timestamp", System.currentTimeMillis());
+                mSocket.emit("battery_status", data);
+            } catch (JSONException e) {
+                Log.e(TAG, "Error sending battery status", e);
+            }
+        }
+    }
+
+    /**
+     * Check if device is charging
+     */
+    private boolean isCharging() {
+        IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = registerReceiver(null, ifilter);
+        if (batteryStatus != null) {
+            int status = batteryStatus.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+            return status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                   status == BatteryManager.BATTERY_STATUS_FULL;
+        }
+        return false;
+    }
+
+    /**
+     * Update network quality indicator
+     */
+    private void updateNetworkIndicator(int signalStrength, int latencyMs) {
+        runOnUiThread(() -> {
+            if (mNetworkIndicator == null) return;
+
+            String icon;
+            int color;
+
+            if (latencyMs < 50 && signalStrength > 80) {
+                icon = "📶"; // Excellent
+                color = Color.parseColor("#00FF00"); // Green
+            } else if (latencyMs < 100 && signalStrength > 60) {
+                icon = "📶"; // Good
+                color = Color.parseColor("#FFFF00"); // Yellow
+            } else if (latencyMs < 200 && signalStrength > 40) {
+                icon = "📡"; // Fair
+                color = Color.parseColor("#FFA500"); // Orange
+            } else {
+                icon = "📡"; // Poor
+                color = Color.parseColor("#FF0000"); // Red
+            }
+
+            mNetworkIndicator.setText(icon);
+            mNetworkIndicator.setTextColor(color);
+        });
+    }
+
     private void initializeSocket() {
         try {
             mSocket = IO.socket(SERVER_URL);
