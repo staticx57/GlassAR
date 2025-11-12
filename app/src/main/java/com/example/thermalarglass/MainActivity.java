@@ -15,8 +15,15 @@ import android.os.BatteryManager;
 import android.os.Bundle;
 import android.util.Base64;
 import android.util.Log;
+import android.view.GestureDetector;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -66,6 +73,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private TextView mModeIndicator;
     private TextView mFrameCounter;
     private TextView mCenterTemperature;
+    private ImageView mCenterReticle;
+    private ImageView mRecordingIndicator;
+    private LinearLayout mAlertArea;
+    private TextView mAlertText;
+    private ProgressBar mProcessingIndicator;
+
+    // Glass touchpad gesture detection
+    private GestureDetector mGestureDetector;
 
     // Network
     private Socket mSocket;
@@ -108,6 +123,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mModeIndicator = findViewById(R.id.mode_indicator);
         mFrameCounter = findViewById(R.id.frame_counter);
         mCenterTemperature = findViewById(R.id.center_temperature);
+        mCenterReticle = findViewById(R.id.center_reticle);
+        mRecordingIndicator = findViewById(R.id.recording_indicator);
+        mAlertArea = findViewById(R.id.alert_area);
+        mAlertText = findViewById(R.id.alert_text);
+        mProcessingIndicator = findViewById(R.id.processing_indicator);
+
+        // Initialize Glass touchpad gesture detector
+        mGestureDetector = createGestureDetector();
 
         // Initialize USB monitor for Boson (using native implementation)
         mUSBMonitor = new NativeUSBMonitor(this, mOnDeviceConnectListener);
@@ -119,6 +142,312 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         initializeBatteryMonitoring();
 
         Log.i(TAG, "Thermal AR Glass initialized");
+    }
+
+    /**
+     * Creates GestureDetector for Glass touchpad gestures
+     */
+    private GestureDetector createGestureDetector() {
+        return new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+
+            // Swipe gesture constants for Glass
+            private static final int SWIPE_MIN_DISTANCE = 50;
+            private static final int SWIPE_MAX_OFF_PATH = 250;
+            private static final int SWIPE_THRESHOLD_VELOCITY = 100;
+
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                try {
+                    // Check if swipe is too vertical (off path)
+                    if (Math.abs(e1.getY() - e2.getY()) > SWIPE_MAX_OFF_PATH) {
+                        return false;
+                    }
+
+                    // Horizontal swipe detection
+                    if (Math.abs(e1.getX() - e2.getX()) > SWIPE_MIN_DISTANCE &&
+                        Math.abs(velocityX) > SWIPE_THRESHOLD_VELOCITY) {
+
+                        if (e1.getX() - e2.getX() > 0) {
+                            // Swipe backward (right to left)
+                            onSwipeBackward();
+                        } else {
+                            // Swipe forward (left to right)
+                            onSwipeForward();
+                        }
+                        return true;
+                    }
+
+                    // Vertical swipe detection (swipe down to dismiss)
+                    if (e1.getY() - e2.getY() < -SWIPE_MIN_DISTANCE &&
+                        Math.abs(velocityY) > SWIPE_THRESHOLD_VELOCITY) {
+                        onSwipeDown();
+                        return true;
+                    }
+
+                } catch (Exception e) {
+                    Log.e(TAG, "Gesture detection error", e);
+                }
+                return false;
+            }
+
+            @Override
+            public boolean onSingleTapConfirmed(MotionEvent e) {
+                onTap();
+                return true;
+            }
+
+            @Override
+            public void onLongPress(MotionEvent e) {
+                onLongTap();
+            }
+
+            @Override
+            public boolean onDoubleTap(MotionEvent e) {
+                onDoubleTap();
+                return true;
+            }
+        });
+    }
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        // Forward touchpad motion events to gesture detector
+        if (mGestureDetector != null) {
+            return mGestureDetector.onTouchEvent(event);
+        }
+        return super.onGenericMotionEvent(event);
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        // Handle Glass hardware button
+        if (keyCode == KeyEvent.KEYCODE_CAMERA) {
+            // Camera button pressed - take snapshot
+            captureSnapshot();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    // ========== Touchpad Gesture Handlers ==========
+
+    /**
+     * Handle touchpad tap gesture
+     * Action: Toggle annotation overlay visibility
+     */
+    private void onTap() {
+        Log.i(TAG, "Touchpad: Tap");
+
+        // Toggle center reticle visibility
+        if (mCenterReticle != null) {
+            int currentVisibility = mCenterReticle.getVisibility();
+            int newVisibility = (currentVisibility == View.VISIBLE) ? View.GONE : View.VISIBLE;
+            mCenterReticle.setVisibility(newVisibility);
+            mCenterTemperature.setVisibility(newVisibility);
+
+            Toast.makeText(this,
+                newVisibility == View.VISIBLE ? "Overlay ON" : "Overlay OFF",
+                Toast.LENGTH_SHORT).show();
+        }
+
+        // Provide haptic feedback
+        performHapticFeedback();
+    }
+
+    /**
+     * Handle touchpad double-tap gesture
+     * Action: Take snapshot
+     */
+    private void onDoubleTap() {
+        Log.i(TAG, "Touchpad: Double tap");
+        captureSnapshot();
+    }
+
+    /**
+     * Handle touchpad long press gesture
+     * Action: Start/stop recording
+     */
+    private void onLongTap() {
+        Log.i(TAG, "Touchpad: Long press");
+        toggleRecording();
+    }
+
+    /**
+     * Handle swipe forward gesture (toward front of Glass)
+     * Action: Cycle through display modes
+     */
+    private void onSwipeForward() {
+        Log.i(TAG, "Touchpad: Swipe forward");
+
+        // Cycle through modes: Thermal Only -> RGB Fusion -> Advanced -> Thermal Only
+        switch (mCurrentMode) {
+            case MODE_THERMAL_ONLY:
+                switchToThermalRgbFusionMode();
+                break;
+            case MODE_THERMAL_RGB_FUSION:
+                switchToAdvancedInspectionMode();
+                break;
+            case MODE_ADVANCED_INSPECTION:
+                switchToThermalOnlyMode();
+                break;
+        }
+
+        performHapticFeedback();
+    }
+
+    /**
+     * Handle swipe backward gesture (toward back of Glass)
+     * Action: Navigate to previous detection
+     */
+    private void onSwipeBackward() {
+        Log.i(TAG, "Touchpad: Swipe backward");
+
+        if (mDetections.isEmpty()) {
+            Toast.makeText(this, "No detections to navigate", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Cycle backward through detections
+        mCurrentDetectionIndex--;
+        if (mCurrentDetectionIndex < 0) {
+            mCurrentDetectionIndex = mDetections.size() - 1;
+        }
+
+        highlightDetection(mCurrentDetectionIndex);
+        performHapticFeedback();
+    }
+
+    /**
+     * Handle swipe down gesture
+     * Action: Dismiss alerts or return to main view
+     */
+    private void onSwipeDown() {
+        Log.i(TAG, "Touchpad: Swipe down");
+
+        // Dismiss alert if showing
+        if (mAlertArea != null && mAlertArea.getVisibility() == View.VISIBLE) {
+            mAlertArea.setVisibility(View.GONE);
+            Toast.makeText(this, "Alert dismissed", Toast.LENGTH_SHORT).show();
+        } else {
+            // Reset to default view
+            resetToMainView();
+        }
+
+        performHapticFeedback();
+    }
+
+    // ========== Gesture Action Implementations ==========
+
+    // Detection navigation tracking
+    private int mCurrentDetectionIndex = 0;
+    private boolean mIsRecording = false;
+
+    /**
+     * Captures a snapshot of current thermal frame with annotations
+     */
+    private void captureSnapshot() {
+        Log.i(TAG, "Capturing snapshot");
+
+        // Show visual feedback
+        if (mProcessingIndicator != null) {
+            mProcessingIndicator.setVisibility(View.VISIBLE);
+        }
+
+        // TODO: Implement actual snapshot capture to storage
+        // This would save the current canvas bitmap with metadata
+
+        runOnUiThread(() -> {
+            Toast.makeText(this, "Snapshot captured", Toast.LENGTH_SHORT).show();
+            if (mProcessingIndicator != null) {
+                mProcessingIndicator.setVisibility(View.GONE);
+            }
+            performHapticFeedback();
+        });
+
+        // Play camera shutter sound
+        playCameraShutterSound();
+    }
+
+    /**
+     * Toggles video recording on/off
+     */
+    private void toggleRecording() {
+        mIsRecording = !mIsRecording;
+
+        if (mIsRecording) {
+            Log.i(TAG, "Recording started");
+            // TODO: Start MediaRecorder for video capture
+
+            if (mRecordingIndicator != null) {
+                mRecordingIndicator.setVisibility(View.VISIBLE);
+            }
+            Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
+        } else {
+            Log.i(TAG, "Recording stopped");
+            // TODO: Stop MediaRecorder and save video
+
+            if (mRecordingIndicator != null) {
+                mRecordingIndicator.setVisibility(View.GONE);
+            }
+            Toast.makeText(this, "Recording stopped", Toast.LENGTH_SHORT).show();
+        }
+
+        performHapticFeedback();
+    }
+
+    /**
+     * Highlights a specific detection by index
+     */
+    private void highlightDetection(int index) {
+        if (index < 0 || index >= mDetections.size()) {
+            return;
+        }
+
+        Detection det = mDetections.get(index);
+        String message = String.format("Detection %d/%d: %s (%.1f%%)",
+            index + 1, mDetections.size(), det.className, det.confidence * 100);
+
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+
+        // Trigger redraw to highlight this detection
+        // The render method will use mCurrentDetectionIndex to emphasize the selected detection
+    }
+
+    /**
+     * Resets view to main thermal display
+     */
+    private void resetToMainView() {
+        mCurrentDetectionIndex = 0;
+
+        // Reset UI elements to default state
+        if (mCenterReticle != null) {
+            mCenterReticle.setVisibility(View.VISIBLE);
+        }
+        if (mCenterTemperature != null) {
+            mCenterTemperature.setVisibility(View.VISIBLE);
+        }
+
+        Toast.makeText(this, "Reset to main view", Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Provides haptic feedback for gesture confirmation
+     */
+    private void performHapticFeedback() {
+        // Glass EE2 supports haptic feedback
+        mSurfaceView.performHapticFeedback(
+            android.view.HapticFeedbackConstants.VIRTUAL_KEY,
+            android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING
+        );
+    }
+
+    /**
+     * Plays camera shutter sound
+     */
+    private void playCameraShutterSound() {
+        // Use MediaActionSound for standard camera sound
+        android.media.MediaActionSound sound = new android.media.MediaActionSound();
+        sound.play(android.media.MediaActionSound.SHUTTER_CLICK);
     }
     
     @Override
@@ -487,7 +816,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         float scaleY = (float) GLASS_HEIGHT / BOSON_HEIGHT;
         
         // Draw object detections
-        for (Detection det : mDetections) {
+        for (int i = 0; i < mDetections.size(); i++) {
+            Detection det = mDetections.get(i);
+            boolean isHighlighted = (i == mCurrentDetectionIndex);
             // Scale bounding box
             Rect scaledBox = new Rect(
                 (int) (det.bbox[0] * scaleX),
@@ -496,19 +827,37 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 (int) (det.bbox[3] * scaleY)
             );
             
-            // Choose color based on confidence
-            if (det.confidence > 0.8) {
+            // Choose color based on confidence and highlight state
+            if (isHighlighted) {
+                // Highlighted detection has thicker border and cyan color
+                boxPaint.setStrokeWidth(6);
+                boxPaint.setColor(Color.CYAN);
+            } else if (det.confidence > 0.8) {
+                boxPaint.setStrokeWidth(3);
                 boxPaint.setColor(Color.GREEN);
             } else if (det.confidence > 0.5) {
+                boxPaint.setStrokeWidth(3);
                 boxPaint.setColor(Color.YELLOW);
             } else {
+                boxPaint.setStrokeWidth(3);
                 boxPaint.setColor(Color.GRAY);
             }
-            
+
             canvas.drawRect(scaledBox, boxPaint);
             
-            // Draw label
-            String label = String.format("%s %.2f", det.className, det.confidence);
+            // Draw label with highlight indicator
+            String label = isHighlighted ?
+                String.format(">>> %s %.2f <<<", det.className, det.confidence) :
+                String.format("%s %.2f", det.className, det.confidence);
+
+            if (isHighlighted) {
+                textPaint.setTextSize(28);
+                textPaint.setColor(Color.CYAN);
+            } else {
+                textPaint.setTextSize(24);
+                textPaint.setColor(Color.WHITE);
+            }
+
             canvas.drawText(label, scaledBox.left, scaledBox.top - 5, textPaint);
         }
         
