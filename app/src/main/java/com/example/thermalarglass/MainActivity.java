@@ -1825,6 +1825,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     payload.put("frame_number", mFrameCount);
                     payload.put("timestamp", System.currentTimeMillis());
 
+                    // Include format metadata for server syncing
+                    if (mDetectedFormat != null) {
+                        payload.put("format", mDetectedFormat.toString());  // "MJPEG", "Y16", or "I420"
+                        payload.put("has_temperature", mDetectedFormat == BosonFormat.Y16);  // Only Y16 is radiometric
+                    } else {
+                        payload.put("format", "unknown");
+                        payload.put("has_temperature", false);
+                    }
+
                     // Include temperature measurements
                     payload.put("center_temp", thermalData.centerTemp);
                     payload.put("min_temp", thermalData.minTemp);

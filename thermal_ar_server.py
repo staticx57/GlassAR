@@ -566,6 +566,12 @@ def handle_thermal_frame(data):
         frame_base64 = data.get('frame')
         mode = data.get('mode', current_mode)
 
+        # Extract Glass context metadata for syncing
+        frame_number = data.get('frame_number', 0)
+        glass_format = data.get('format', 'unknown')  # 'MJPEG', 'Y16', 'I420'
+        has_temperature = data.get('has_temperature', False)
+        client_timestamp = data.get('timestamp')
+
         # Decode base64 to bytes
         if isinstance(frame_base64, str):
             frame_data = base64.b64decode(frame_base64)
@@ -573,8 +579,28 @@ def handle_thermal_frame(data):
             # Fallback for raw bytes (backward compatibility)
             frame_data = frame_base64
 
+        # Validate format sync (log first few frames)
+        if frame_number <= 3:
+            is_mjpeg = len(frame_data) >= 2 and frame_data[0] == 0xFF and frame_data[1] == 0xD8
+            detected_format = "MJPEG" if is_mjpeg else "Y16/Raw"
+
+            logger.info(f"Frame #{frame_number}: Glass='{glass_format}', Detected='{detected_format}', "
+                       f"Size={len(frame_data)} bytes, HasTemp={has_temperature}")
+
+            if glass_format != 'unknown' and glass_format not in detected_format:
+                logger.warning(f"⚠ Format mismatch! Glass reports '{glass_format}' but server sees '{detected_format}'")
+
         # Process frame
         annotations = processor.process_stream(frame_data, mode)
+
+        if annotations:
+            # Add server metadata for latency tracking
+            annotations['server_timestamp'] = int(time.time() * 1000)
+            if client_timestamp:
+                annotations['client_timestamp'] = client_timestamp
+
+            # Echo format info
+            annotations['format_confirmed'] = glass_format
 
         if annotations:
             # Send annotations back to Glass
