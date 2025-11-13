@@ -162,15 +162,44 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // Initialize server URL configuration receiver
         initializeServerConfigReceiver();
 
-        // Start RGB camera as fallback if no thermal camera detected within 2 seconds
+        // Load settings and apply defaults
+        loadSettings();
+
+        // Start RGB camera as fallback if no thermal camera detected within 2 seconds (if enabled in settings)
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-            if (!mThermalCameraActive) {
+            android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+            boolean rgbFallbackEnabled = prefs.getBoolean("rgb_fallback", true);
+
+            if (!mThermalCameraActive && rgbFallbackEnabled) {
                 Log.i(TAG, "No thermal camera detected, starting RGB fallback");
                 startRgbCameraFallback();
+            } else if (!mThermalCameraActive && !rgbFallbackEnabled) {
+                Log.i(TAG, "RGB fallback disabled in settings");
             }
         }, 2000);
 
         Log.i(TAG, "Thermal AR Glass initialized");
+    }
+
+    /**
+     * Load settings from SharedPreferences and apply them
+     */
+    private void loadSettings() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+
+        // Load default colormap
+        String defaultColormap = prefs.getString("default_colormap", "iron");
+        mCurrentColormap = defaultColormap;
+
+        // Find colormap index
+        for (int i = 0; i < mAvailableColormaps.length; i++) {
+            if (mAvailableColormaps[i].equals(defaultColormap)) {
+                mCurrentColormapIndex = i;
+                break;
+            }
+        }
+
+        Log.i(TAG, "Loaded settings - Colormap: " + mCurrentColormap);
     }
 
     /**
@@ -210,6 +239,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     if (e1.getY() - e2.getY() < -SWIPE_MIN_DISTANCE &&
                         Math.abs(velocityY) > SWIPE_THRESHOLD_VELOCITY) {
                         onSwipeDown();
+                        return true;
+                    }
+
+                    // Vertical swipe up - open settings
+                    if (e1.getY() - e2.getY() > SWIPE_MIN_DISTANCE &&
+                        Math.abs(velocityY) > SWIPE_THRESHOLD_VELOCITY) {
+                        onSwipeUp();
                         return true;
                     }
 
@@ -367,6 +403,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         performHapticFeedback();
     }
 
+    /**
+     * Handle swipe up gesture
+     * Action: Open settings activity
+     */
+    private void onSwipeUp() {
+        Log.i(TAG, "Touchpad: Swipe up - Opening settings");
+
+        android.content.Intent intent = new android.content.Intent(this, SettingsActivity.class);
+        startActivity(intent);
+
+        performHapticFeedback();
+    }
+
     // ========== Gesture Action Implementations ==========
 
     // Detection navigation tracking
@@ -485,8 +534,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onStart() {
         super.onStart();
         mUSBMonitor.register();
-        if (mSocket != null && !mSocket.connected()) {
+
+        // Respect auto-connect setting
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        boolean autoConnect = prefs.getBoolean("auto_connect", true);
+
+        if (mSocket != null && !mSocket.connected() && autoConnect) {
             mSocket.connect();
+            Log.i(TAG, "Auto-connecting to server (enabled in settings)");
+        } else if (!autoConnect) {
+            Log.i(TAG, "Auto-connect disabled in settings");
         }
     }
     

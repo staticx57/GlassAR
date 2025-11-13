@@ -40,6 +40,13 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/device_filter" />
         </activity>
+
+        <!-- Settings Activity -->
+        <activity
+            android:name=".SettingsActivity"
+            android:screenOrientation="landscape"
+            android:exported="false"
+            android:label="Settings" />
     </application>
 
 </manifest>
