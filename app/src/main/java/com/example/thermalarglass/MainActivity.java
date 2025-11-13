@@ -1741,10 +1741,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
     
     private void renderThermalFrame(ByteBuffer frameData) {
-        if (mSurfaceHolder == null) return;
+        if (mSurfaceHolder == null) {
+            Log.w(TAG, "Cannot render - surface holder is null");
+            return;
+        }
 
         Canvas canvas = mSurfaceHolder.lockCanvas();
-        if (canvas == null) return;
+        if (canvas == null) {
+            Log.w(TAG, "Cannot render - canvas is null");
+            return;
+        }
 
         try {
             // Clear canvas
@@ -1768,6 +1774,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // Scale to Glass display size
                 Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
                 canvas.drawBitmap(thermalBitmap, null, destRect, null);
+
+                // Log successful render (only first 5 frames)
+                if (mFrameCount <= 5) {
+                    Log.i(TAG, "✓ Frame #" + mFrameCount + " rendered successfully to display");
+                }
+            } else {
+                Log.e(TAG, "✗ Frame #" + mFrameCount + " - convertThermalToBitmap returned NULL");
+                // Draw error indicator
+                Paint paint = new Paint();
+                paint.setColor(Color.RED);
+                paint.setTextSize(30);
+                canvas.drawText("NO FRAME DATA", 50, 100, paint);
             }
 
             // Draw annotations on top
@@ -1789,7 +1807,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         try {
             // Validate frame data
             if (frameData == null) {
-                Log.w(TAG, "Null frame data");
+                Log.e(TAG, "✗ convertThermalToBitmap: frame data is NULL");
                 return null;
             }
 
@@ -1797,14 +1815,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
             // Auto-detect format on first frame
             if (mDetectedFormat == null) {
+                Log.i(TAG, ">>> FORMAT AUTO-DETECTION <<<");
+                Log.i(TAG, "  Received frame size: " + available + " bytes");
+                Log.i(TAG, "  Y16 expected: " + Y16_FRAME_SIZE + " bytes (320×256×2)");
+                Log.i(TAG, "  I420 expected: " + I420_FRAME_SIZE + " bytes (640×512×1.5)");
+
                 if (available == Y16_FRAME_SIZE) {
                     mDetectedFormat = BosonFormat.Y16;
-                    Log.i(TAG, "Detected Y16 format: 320×256, 16-bit radiometric");
+                    Log.i(TAG, "✓ DETECTED: Y16 format (320×256, 16-bit radiometric)");
                 } else if (available == I420_FRAME_SIZE) {
                     mDetectedFormat = BosonFormat.I420;
-                    Log.i(TAG, "Detected I420 format: 640×512, YUV420 colorized");
+                    Log.i(TAG, "✓ DETECTED: I420 format (640×512, YUV420 colorized)");
                 } else {
-                    Log.w(TAG, "Unknown frame size: " + available + " bytes (expected " + Y16_FRAME_SIZE + " or " + I420_FRAME_SIZE + ")");
+                    Log.e(TAG, "✗ UNKNOWN FRAME SIZE: " + available + " bytes");
+                    Log.e(TAG, "  Camera may be sending unexpected format!");
+                    Log.e(TAG, "  Check UVC negotiation logs above");
                     return null;
                 }
             }
@@ -1816,10 +1841,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return convertI420ToBitmap(frameData, available);
             }
 
+            Log.e(TAG, "✗ No format detected - this should not happen!");
             return null;
 
         } catch (Exception e) {
-            Log.e(TAG, "Error converting thermal frame", e);
+            Log.e(TAG, "✗ EXCEPTION in convertThermalToBitmap", e);
             return null;
         }
     }
