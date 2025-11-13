@@ -459,6 +459,8 @@ public class NativeUVCCamera {
         int frameCount = 0;
         int errorCount = 0;
         long lastLogTime = System.currentTimeMillis();
+        long frameStartTime = System.currentTimeMillis();
+        final long FRAME_TIMEOUT_MS = 1000;  // 1 second timeout for frame accumulation
 
         while (mStreaming.get()) {
             try {
@@ -475,7 +477,27 @@ public class NativeUVCCamera {
                     // Check for UVC payload header (first 2-12 bytes)
                     int headerLength = buffer[0] & 0xFF;
 
+                    // VALIDATE: UVC spec requires header length 2-12 bytes (or 0 for no header)
+                    // Reject obviously invalid values to prevent data corruption
+                    if (headerLength == 1 || headerLength > 12) {
+                        if (frameCount < 5) {
+                            Log.w(TAG, "Invalid UVC header length: " + headerLength +
+                                      " (expected 0, or 2-12) - treating as no header");
+                        }
+                        headerLength = 0;  // Treat as no header
+                    }
+
                     if (headerLength > 0 && headerLength < bytesRead) {
+                        // Log header details for first few packets (debugging)
+                        if (frameCount == 0 && accumulated < 1000) {
+                            int bitField = buffer[1] & 0xFF;
+                            boolean eof = (bitField & 0x02) != 0;
+                            boolean error = (bitField & 0x40) != 0;
+                            Log.d(TAG, "UVC Header: len=" + headerLength +
+                                      ", EOF=" + eof + ", ERR=" + error +
+                                      ", bits=0x" + String.format("%02X", bitField));
+                        }
+
                         // Extract payload data (skip header)
                         int payloadLength = bytesRead - headerLength;
 
@@ -486,7 +508,19 @@ public class NativeUVCCamera {
                             Log.w(TAG, "Frame buffer overflow! Remaining: " + frameBuffer.remaining() +
                                       ", needed: " + payloadLength + " - discarding and starting new frame");
                             frameBuffer.clear();
-                            frameBuffer.put(buffer, headerLength, payloadLength);
+                            mjpegDetected = false;  // Reset format detection for new frame
+                            frameStartTime = System.currentTimeMillis();  // Reset timeout
+
+                            // Only add current payload if it looks like a frame start (JPEG SOI for MJPEG)
+                            if (payloadLength >= 2 &&
+                                buffer[headerLength] == (byte)0xFF &&
+                                buffer[headerLength + 1] == (byte)0xD8) {
+                                Log.i(TAG, "New frame starts with JPEG SOI - good recovery");
+                                frameBuffer.put(buffer, headerLength, payloadLength);
+                            } else {
+                                Log.w(TAG, "Discarding payload - doesn't start with JPEG SOI");
+                                // Don't add anything, wait for next packet
+                            }
                         }
 
                         // Frame completion detection
@@ -496,11 +530,13 @@ public class NativeUVCCamera {
 
                         // MJPEG detection: Check if accumulated data starts with JPEG magic bytes
                         if (!mjpegDetected && accumulated >= 2) {
-                            frameBuffer.mark();
+                            // Save current position before checking magic bytes
+                            int savedPosition = frameBuffer.position();
                             frameBuffer.position(0);
                             byte firstByte = frameBuffer.get();
                             byte secondByte = frameBuffer.get();
-                            frameBuffer.reset();
+                            // Restore position
+                            frameBuffer.position(savedPosition);
 
                             // JPEG magic bytes: 0xFF 0xD8
                             if (firstByte == (byte)0xFF && secondByte == (byte)0xD8) {
@@ -561,6 +597,18 @@ public class NativeUVCCamera {
                             }
                         }
 
+                        // Check for frame accumulation timeout
+                        long now = System.currentTimeMillis();
+                        if (!frameComplete && accumulated > 0 && (now - frameStartTime) > FRAME_TIMEOUT_MS) {
+                            Log.w(TAG, "Frame accumulation timeout! " + accumulated +
+                                      " bytes accumulated in " + (now - frameStartTime) + "ms - resetting");
+                            Log.w(TAG, "  Format: " + (mjpegDetected ? "MJPEG" : "uncompressed") +
+                                      ", EOF bit seen: " + endOfFrame);
+                            frameBuffer.clear();
+                            mjpegDetected = false;
+                            frameStartTime = now;
+                        }
+
                         if (frameComplete && frameBuffer.position() > 0) {
                             // Frame complete - deliver to callback
                             frameBuffer.flip();
@@ -583,6 +631,7 @@ public class NativeUVCCamera {
 
                             // Reset for next frame
                             frameBuffer.clear();
+                            frameStartTime = System.currentTimeMillis();  // Reset timeout for next frame
 
                             // Periodic status logging (every 5 seconds)
                             long now = System.currentTimeMillis();
