@@ -321,8 +321,8 @@ public class NativeUVCCamera {
         int bufferSize = mStreamingEndpoint.getMaxPacketSize() * 32;  // Buffer for multiple packets
         byte[] buffer = new byte[bufferSize];
 
-        // Frame accumulation buffer (for Boson 320: 320x256x2 = 163840 bytes for YUYV)
-        int frameSize = mWidth * mHeight * 2;  // YUYV format
+        // Frame accumulation buffer (for Boson 320: 320x256x2 = 163840 bytes for Y16)
+        int frameSize = mWidth * mHeight * 2;  // Y16 format (16-bit grayscale per pixel)
         ByteBuffer frameBuffer = ByteBuffer.allocate(frameSize);
 
         Log.i(TAG, "Streaming loop started, buffer size: " + bufferSize);

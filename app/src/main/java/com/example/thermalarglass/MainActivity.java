@@ -1654,8 +1654,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private Bitmap convertThermalToBitmap(ByteBuffer frameData) {
         try {
-            // Boson 320 outputs YUYV format: 320x256x2 = 163,840 bytes
-            // YUYV packing: Y0 U0 Y1 V0 (4 bytes for 2 pixels)
+            // Boson 320 outputs Y16 format: 320x256x2 = 163,840 bytes
+            // Y16 format: 16-bit grayscale per pixel (Little Endian: LOW_BYTE, HIGH_BYTE)
             final int EXPECTED_FRAME_SIZE = BOSON_WIDTH * BOSON_HEIGHT * 2;
 
             // Validate frame size before processing
@@ -1683,9 +1683,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             // Convert to pixel array
             int[] pixels = new int[BOSON_WIDTH * BOSON_HEIGHT];
 
-            // Extract luminance (Y) values from YUYV format
-            // In YUYV: every odd byte is Y (luminance), even bytes are U/V (chrominance)
-            // We extract Y and skip U/V since we only need brightness for thermal imaging
+            // Extract 16-bit values from Y16 format
+            // Y16 format stores each pixel as 2 bytes (Little Endian):
+            // Byte 0: LOW byte, Byte 1: HIGH byte
+            // Value range: 0-65535 (16-bit)
             int byteIndex = 0;
             for (int i = 0; i < pixels.length; i++) {
                 if (byteIndex + 1 >= frameCopy.length) {
@@ -1693,15 +1694,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     break;
                 }
 
-                // Read Y value (luminance) from copied buffer
-                int y = frameCopy[byteIndex] & 0xFF;
-                byteIndex++; // Move to next byte
+                // Read 16-bit Y16 value (Little Endian)
+                int lowByte = frameCopy[byteIndex] & 0xFF;
+                int highByte = frameCopy[byteIndex + 1] & 0xFF;
+                int y16Value = (highByte << 8) | lowByte;  // Combine to 16-bit value (0-65535)
 
-                // Skip U or V byte (chrominance - alternates)
-                byteIndex++; // Skip chrominance byte
+                // Scale 16-bit value (0-65535) to 8-bit (0-255) for colormap
+                int y8Value = (y16Value >> 8);  // Use upper 8 bits for better dynamic range
 
-                // Apply thermal colormap to luminance value
-                pixels[i] = applyThermalColormap(y);
+                byteIndex += 2;  // Move to next pixel (2 bytes per pixel in Y16)
+
+                // Apply thermal colormap to scaled value
+                pixels[i] = applyThermalColormap(y8Value);
             }
 
             // Set all pixels at once (more efficient than pixel-by-pixel)
