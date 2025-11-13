@@ -106,8 +106,9 @@ build.bat install
 | Double-tap | Capture snapshot |
 | Long press | Start/stop recording |
 | Swipe forward | Cycle display modes |
-| Swipe backward | Navigate detections (connected only) |
+| Swipe backward | Navigate detections (connected) / Cycle colormaps (standalone) |
 | Swipe down | Dismiss alerts |
+| Swipe up | Open settings |
 
 ---
 

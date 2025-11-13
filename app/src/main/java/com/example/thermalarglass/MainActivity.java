@@ -417,14 +417,30 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /**
      * Handle swipe backward gesture (toward back of Glass)
-     * Action: Cycle through thermal colormaps (only when thermal camera active)
+     * Action: Navigate detections (connected mode) or cycle colormaps (standalone mode)
      */
     private void onSwipeBackward() {
         Log.i(TAG, "Touchpad: Swipe backward");
 
-        // Only cycle colormaps when thermal camera is active
+        // Connected mode: Navigate through detections
+        if (mConnected && !mDetections.isEmpty()) {
+            // Navigate to previous detection (wrap around)
+            mCurrentDetectionIndex--;
+            if (mCurrentDetectionIndex < 0) {
+                mCurrentDetectionIndex = mDetections.size() - 1;
+            }
+
+            highlightDetection(mCurrentDetectionIndex);
+            Log.i(TAG, "Navigated to detection: " + mCurrentDetectionIndex);
+            performHapticFeedback();
+            return;
+        }
+
+        // Standalone mode: Cycle colormaps (only when thermal camera active)
         if (!mThermalCameraActive) {
-            Toast.makeText(this, "Colormap cycling only available in thermal mode", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this,
+                mConnected ? "No detections available" : "Colormap cycling only available in thermal mode",
+                Toast.LENGTH_SHORT).show();
             return;
         }
 
