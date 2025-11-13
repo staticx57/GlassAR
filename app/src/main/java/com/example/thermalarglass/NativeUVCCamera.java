@@ -496,11 +496,13 @@ public class NativeUVCCamera {
 
                         // MJPEG detection: Check if accumulated data starts with JPEG magic bytes
                         if (!mjpegDetected && accumulated >= 2) {
-                            frameBuffer.mark();
+                            // Save current position before checking magic bytes
+                            int savedPosition = frameBuffer.position();
                             frameBuffer.position(0);
                             byte firstByte = frameBuffer.get();
                             byte secondByte = frameBuffer.get();
-                            frameBuffer.reset();
+                            // Restore position
+                            frameBuffer.position(savedPosition);
 
                             // JPEG magic bytes: 0xFF 0xD8
                             if (firstByte == (byte)0xFF && secondByte == (byte)0xD8) {
