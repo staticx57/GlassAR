@@ -279,7 +279,7 @@ public class SettingsActivity extends Activity {
         float[] confidenceValues = {0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f};
         float detectionConfidence = confidenceValues[mDetectionConfidenceSpinner.getSelectedItemPosition()];
 
-        // Save all to SharedPreferences
+        // Save all to SharedPreferences and VALIDATE
         SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
         SharedPreferences.Editor editor = prefs.edit();
         editor.putString(PREF_SERVER_URL, newUrl);
@@ -293,9 +293,19 @@ public class SettingsActivity extends Activity {
         editor.putInt(PREF_RECORDING_INTERVAL, recordingInterval);
         editor.putInt(PREF_BATTERY_ALERT, batteryAlert);
         editor.putFloat(PREF_DETECTION_CONFIDENCE, detectionConfidence);
-        editor.apply();
 
-        Log.i(TAG, "Settings saved: URL=" + newUrl + ", Colormap=" + colormap +
+        // VALIDATE: Use commit() to verify settings were saved
+        boolean saved = editor.commit();
+        if (!saved) {
+            Log.e(TAG, "FAILED to save settings to SharedPreferences");
+            Log.e(TAG, "Check storage permissions and available space");
+            Toast.makeText(this,
+                "ERROR: Failed to save settings - check storage permissions",
+                Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Log.i(TAG, "✓ Settings saved successfully: URL=" + newUrl + ", Colormap=" + colormap +
               ", FPS=" + frameRate + ", TempUnit=" + tempUnit + ", RecInterval=" + recordingInterval);
 
         Toast.makeText(this, "✓ Settings saved successfully!\nMost changes apply immediately", Toast.LENGTH_LONG).show();
@@ -384,12 +394,26 @@ public class SettingsActivity extends Activity {
                 int responseCode = conn.getResponseCode();
                 conn.disconnect();
 
-                if (responseCode == 200 || responseCode == 404) {
-                    // 200 = OK, 404 = server exists but endpoint not found (still means server is reachable)
-                    result = "✓ Connection successful!\nServer responded with HTTP " + responseCode;
+                // VALIDATE: Only HTTP 200 is true success
+                if (responseCode == 200) {
+                    result = "✓ Connection successful!\nServer responded: HTTP 200 OK";
                     success = true;
+                } else if (responseCode == 404) {
+                    result = "⚠ Server reachable but endpoint not found (HTTP 404)\n" +
+                            "Server may not be running or configured correctly";
+                    success = false;  // NOT a success - endpoint doesn't exist
+                } else if (responseCode >= 500) {
+                    result = "✗ Server error: HTTP " + responseCode + "\n" +
+                            "Server is having internal issues";
+                    success = false;
+                } else if (responseCode >= 400) {
+                    result = "✗ Client error: HTTP " + responseCode + "\n" +
+                            "Check server URL and configuration";
+                    success = false;
                 } else {
-                    result = "⚠ Server responded with HTTP " + responseCode + "\nCheck server configuration";
+                    result = "⚠ Unexpected response: HTTP " + responseCode + "\n" +
+                            "Server may not be configured correctly";
+                    success = false;
                 }
 
             } catch (IOException e) {
