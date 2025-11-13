@@ -1,10 +1,12 @@
 package com.example.thermalarglass;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -33,10 +35,16 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 import io.socket.client.IO;
 import io.socket.client.Socket;
@@ -52,6 +60,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private static final String DEFAULT_SERVER_URL = "http://192.168.1.100:8080"; // Default server
     private static final String PREF_NAME = "GlassARPrefs";
     private static final String PREF_SERVER_URL = "server_url";
+    private static final int PERMISSION_REQUEST_CAMERA = 1;
     
     // Boson 320 specs
     private static final int BOSON_WIDTH = 320;
@@ -117,6 +126,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Frame counter
     private int mFrameCount = 0;
 
+    // Latest thermal frame for snapshot capture
+    private Bitmap mLatestThermalBitmap = null;
+    private ByteBuffer mLatestFrameData = null;
+
     // Battery monitoring
     private int mBatteryLevel = 100;
     private BroadcastReceiver mBatteryReceiver;
@@ -128,6 +141,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Check for camera permission (required for API 23+, including Glass EE2 on API 27)
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Log.i(TAG, "Camera permission not granted, requesting permission");
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, PERMISSION_REQUEST_CAMERA);
+            // Don't return - continue initialization for UI, cameras will be started after permission granted
+        }
 
         // Initialize display
         mSurfaceView = findViewById(R.id.surface_view);
@@ -294,6 +314,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         return super.onKeyDown(keyCode, event);
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == PERMISSION_REQUEST_CAMERA) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "Camera permission granted");
+                Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show();
+
+                // Permission granted - cameras will be initialized normally in onStart()
+                // or by the RGB fallback handler
+            } else {
+                Log.w(TAG, "Camera permission denied");
+                Toast.makeText(this,
+                    "Camera permission required for thermal imaging. Please grant permission in Settings.",
+                    Toast.LENGTH_LONG).show();
+
+                // Show alert that camera permission is required
+                runOnUiThread(() -> {
+                    if (mAlertArea != null && mAlertText != null) {
+                        mAlertArea.setVisibility(View.VISIBLE);
+                        mAlertText.setText("⚠ Camera permission required\nGrant permission in Settings");
+                    }
+                });
+            }
+        }
+    }
+
     // ========== Touchpad Gesture Handlers ==========
 
     /**
@@ -433,19 +481,89 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             mProcessingIndicator.setVisibility(View.VISIBLE);
         }
 
-        // TODO: Implement actual snapshot capture to storage
-        // This would save the current canvas bitmap with metadata
+        // Save snapshot in background thread
+        new Thread(() -> {
+            try {
+                // Create snapshot bitmap with annotations
+                Bitmap snapshot = createSnapshotBitmap();
 
-        runOnUiThread(() -> {
-            Toast.makeText(this, "Snapshot captured", Toast.LENGTH_SHORT).show();
-            if (mProcessingIndicator != null) {
-                mProcessingIndicator.setVisibility(View.GONE);
+                if (snapshot == null) {
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, "No frame available to capture", Toast.LENGTH_SHORT).show();
+                        if (mProcessingIndicator != null) {
+                            mProcessingIndicator.setVisibility(View.GONE);
+                        }
+                    });
+                    return;
+                }
+
+                // Create Pictures/ThermalAR directory
+                File picturesDir = new File(getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "ThermalAR");
+                if (!picturesDir.exists()) {
+                    picturesDir.mkdirs();
+                }
+
+                // Generate filename with timestamp
+                SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+                String timestamp = sdf.format(new Date());
+                String filename = "thermal_" + timestamp + ".png";
+                File file = new File(picturesDir, filename);
+
+                // Save bitmap to file
+                FileOutputStream out = new FileOutputStream(file);
+                snapshot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                out.flush();
+                out.close();
+
+                Log.i(TAG, "Snapshot saved: " + file.getAbsolutePath());
+
+                // Show success message
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Snapshot saved: " + filename, Toast.LENGTH_SHORT).show();
+                    if (mProcessingIndicator != null) {
+                        mProcessingIndicator.setVisibility(View.GONE);
+                    }
+                    performHapticFeedback();
+                });
+
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to save snapshot", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Failed to save snapshot: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    if (mProcessingIndicator != null) {
+                        mProcessingIndicator.setVisibility(View.GONE);
+                    }
+                });
             }
-            performHapticFeedback();
-        });
+        }).start();
 
         // Play camera shutter sound
         playCameraShutterSound();
+    }
+
+    /**
+     * Creates a snapshot bitmap with thermal image and annotations
+     */
+    private Bitmap createSnapshotBitmap() {
+        if (mLatestThermalBitmap == null) {
+            return null;
+        }
+
+        // Create a new bitmap for the snapshot (Glass display size)
+        Bitmap snapshot = Bitmap.createBitmap(GLASS_WIDTH, GLASS_HEIGHT, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(snapshot);
+
+        // Draw black background
+        canvas.drawColor(Color.BLACK);
+
+        // Scale and draw thermal bitmap
+        Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
+        canvas.drawBitmap(mLatestThermalBitmap, null, destRect, null);
+
+        // Draw annotations on top
+        drawAnnotations(canvas);
+
+        return snapshot;
     }
 
     /**
@@ -1283,6 +1401,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             // Convert thermal frame to bitmap and draw
             Bitmap thermalBitmap = convertThermalToBitmap(frameData);
             if (thermalBitmap != null) {
+                // Store latest frame for snapshot capture
+                mLatestThermalBitmap = thermalBitmap;
+
+                // Store frame data copy for snapshot
+                if (mLatestFrameData == null || mLatestFrameData.capacity() != frameData.capacity()) {
+                    mLatestFrameData = ByteBuffer.allocate(frameData.capacity());
+                }
+                frameData.rewind();
+                mLatestFrameData.clear();
+                mLatestFrameData.put(frameData);
+                frameData.rewind();
+
                 // Scale to Glass display size
                 Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
                 canvas.drawBitmap(thermalBitmap, null, destRect, null);
