@@ -69,8 +69,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private static final int TARGET_FPS = 60;
 
     // Boson format specifications
-    private static final int Y16_FRAME_SIZE = 320 * 256 * 2;      // 163,840 bytes (16-bit grayscale)
-    private static final int I420_FRAME_SIZE = 640 * 512 * 3 / 2; // 491,520 bytes (YUV420 planar)
+    // FLIR Boson can include 2 telemetry rows at the bottom of frames (per SDK)
+    private static final int Y16_FRAME_SIZE = 320 * 256 * 2;           // 163,840 bytes (16-bit grayscale, no telemetry)
+    private static final int Y16_FRAME_SIZE_WITH_TELEM = 320 * 258 * 2; // 165,120 bytes (with 2 telemetry rows)
+    private static final int I420_FRAME_SIZE = 640 * 512 * 3 / 2;      // 491,520 bytes (YUV420 planar, no telemetry)
+    private static final int I420_FRAME_SIZE_WITH_TELEM = 640 * 514 * 3 / 2; // 494,592 bytes (with 2 telemetry rows)
     private static final int I420_WIDTH = 640;
     private static final int I420_HEIGHT = 512;
 
@@ -1817,18 +1820,29 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (mDetectedFormat == null) {
                 Log.i(TAG, ">>> FORMAT AUTO-DETECTION <<<");
                 Log.i(TAG, "  Received frame size: " + available + " bytes");
-                Log.i(TAG, "  Y16 expected: " + Y16_FRAME_SIZE + " bytes (320×256×2)");
-                Log.i(TAG, "  I420 expected: " + I420_FRAME_SIZE + " bytes (640×512×1.5)");
+                Log.i(TAG, "  Y16 expected: " + Y16_FRAME_SIZE + " or " + Y16_FRAME_SIZE_WITH_TELEM + " bytes (320×256 or 320×258 with telemetry)");
+                Log.i(TAG, "  I420 expected: " + I420_FRAME_SIZE + " or " + I420_FRAME_SIZE_WITH_TELEM + " bytes (640×512 or 640×514 with telemetry)");
 
-                if (available == Y16_FRAME_SIZE) {
+                if (available == Y16_FRAME_SIZE || available == Y16_FRAME_SIZE_WITH_TELEM) {
                     mDetectedFormat = BosonFormat.Y16;
-                    Log.i(TAG, "✓ DETECTED: Y16 format (320×256, 16-bit radiometric)");
-                } else if (available == I420_FRAME_SIZE) {
+                    if (available == Y16_FRAME_SIZE_WITH_TELEM) {
+                        Log.i(TAG, "✓ DETECTED: Y16 format (320×258, 16-bit radiometric WITH telemetry)");
+                        Log.w(TAG, "  ⚠ Telemetry rows detected - will strip last 2 rows (1280 bytes)");
+                    } else {
+                        Log.i(TAG, "✓ DETECTED: Y16 format (320×256, 16-bit radiometric, no telemetry)");
+                    }
+                } else if (available == I420_FRAME_SIZE || available == I420_FRAME_SIZE_WITH_TELEM) {
                     mDetectedFormat = BosonFormat.I420;
-                    Log.i(TAG, "✓ DETECTED: I420 format (640×512, YUV420 colorized)");
+                    if (available == I420_FRAME_SIZE_WITH_TELEM) {
+                        Log.i(TAG, "✓ DETECTED: I420 format (640×514, YUV420 colorized WITH telemetry)");
+                        Log.w(TAG, "  ⚠ Telemetry rows detected - will strip last 2 rows");
+                    } else {
+                        Log.i(TAG, "✓ DETECTED: I420 format (640×512, YUV420 colorized, no telemetry)");
+                    }
                 } else {
                     Log.e(TAG, "✗ UNKNOWN FRAME SIZE: " + available + " bytes");
-                    Log.e(TAG, "  Camera may be sending unexpected format!");
+                    Log.e(TAG, "  Expected Y16: " + Y16_FRAME_SIZE + " or " + Y16_FRAME_SIZE_WITH_TELEM);
+                    Log.e(TAG, "  Expected I420: " + I420_FRAME_SIZE + " or " + I420_FRAME_SIZE_WITH_TELEM);
                     Log.e(TAG, "  Check UVC negotiation logs above");
                     return null;
                 }
@@ -1861,10 +1875,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return null;
             }
 
-            // Make defensive copy
+            // Make defensive copy - only copy image data, skip telemetry rows if present
             frameData.rewind();
             byte[] frameCopy = new byte[Y16_FRAME_SIZE];
             frameData.get(frameCopy);
+
+            // If frame has telemetry (320×258), we already copied only first 163,840 bytes (320×256)
+            // The last 1,280 bytes (2 telemetry rows) are automatically ignored
 
             // Create bitmap (320×256)
             Bitmap bitmap = Bitmap.createBitmap(BOSON_WIDTH, BOSON_HEIGHT, Bitmap.Config.ARGB_8888);
@@ -1914,10 +1931,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return null;
             }
 
-            // Make defensive copy
+            // Make defensive copy - only copy image data, skip telemetry rows if present
             frameData.rewind();
             byte[] frameCopy = new byte[I420_FRAME_SIZE];
             frameData.get(frameCopy);
+
+            // If frame has telemetry (640×514), we already copied only first 491,520 bytes (640×512)
+            // The telemetry rows at the end are automatically ignored
 
             // Create bitmap (640×512)
             Bitmap bitmap = Bitmap.createBitmap(I420_WIDTH, I420_HEIGHT, Bitmap.Config.ARGB_8888);
