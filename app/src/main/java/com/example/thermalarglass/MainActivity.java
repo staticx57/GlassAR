@@ -203,18 +203,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // Load settings and apply defaults
         loadSettings();
 
-        // Start RGB camera as fallback if no thermal camera detected within 2 seconds (if enabled in settings)
+        // Start RGB camera as fallback if no thermal camera detected within 5 seconds (if enabled in settings)
+        // Extended delay to give thermal camera time to connect via USB
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
             android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
             boolean rgbFallbackEnabled = prefs.getBoolean("rgb_fallback", true);
 
             if (!mThermalCameraActive && rgbFallbackEnabled) {
-                Log.i(TAG, "No thermal camera detected, starting RGB fallback");
+                Log.i(TAG, "No thermal camera detected after 5s, starting RGB fallback");
                 startRgbCameraFallback();
-            } else if (!mThermalCameraActive && !rgbFallbackEnabled) {
+            } else if (mThermalCameraActive) {
+                Log.i(TAG, "Thermal camera active, skipping RGB fallback");
+            } else {
                 Log.i(TAG, "RGB fallback disabled in settings");
             }
-        }, 2000);
+        }, 5000);
 
         Log.i(TAG, "Thermal AR Glass initialized");
     }
@@ -1687,6 +1690,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
             // Set all pixels at once (more efficient than pixel-by-pixel)
             bitmap.setPixels(pixels, 0, BOSON_WIDTH, 0, 0, BOSON_WIDTH, BOSON_HEIGHT);
+
+            // Rewind buffer before returning so it's ready for next use
+            // This is critical if the USB layer reuses the same ByteBuffer object
+            frameData.rewind();
+
             return bitmap;
 
         } catch (Exception e) {
@@ -2011,22 +2019,55 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      * Displays RGB preview directly on screen
      */
     private void startRgbCameraFallback() {
+        // Check camera permission first
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Cannot start RGB fallback - camera permission not granted");
+            Toast.makeText(this, "Camera permission required for RGB fallback", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        // Check if surface is ready
+        if (mSurfaceHolder == null) {
+            Log.w(TAG, "Cannot start RGB fallback - surface not ready");
+            return;
+        }
+
         try {
+            // Stop any existing RGB camera first
+            if (mRgbCamera != null) {
+                Log.i(TAG, "Stopping existing RGB camera before restart");
+                stopRgbCamera();
+            }
+
             // Open Glass EE2 built-in camera (usually camera 0)
+            Log.i(TAG, "Opening RGB camera (camera 0)...");
             mRgbCamera = android.hardware.Camera.open(0);
+
+            if (mRgbCamera == null) {
+                Log.e(TAG, "Failed to open RGB camera - returned null");
+                Toast.makeText(this, "RGB camera not available", Toast.LENGTH_LONG).show();
+                return;
+            }
 
             android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
             // Set parameters for Glass EE2 camera (640x360 to match display)
+            Log.i(TAG, "Setting RGB camera preview size to 640x360");
             params.setPreviewSize(640, 360);
             mRgbCamera.setParameters(params);
 
             // Set preview display to show on screen
             try {
+                Log.i(TAG, "Setting RGB camera preview display");
                 mRgbCamera.setPreviewDisplay(mSurfaceHolder);
             } catch (java.io.IOException e) {
                 Log.e(TAG, "Failed to set preview display", e);
+                mRgbCamera.release();
+                mRgbCamera = null;
+                Toast.makeText(this, "Failed to set RGB camera display", Toast.LENGTH_LONG).show();
+                return;
             }
 
+            Log.i(TAG, "Starting RGB camera preview");
             mRgbCamera.startPreview();
             mRgbCameraEnabled = true;
             mUsingRgbFallback = true;
@@ -2036,13 +2077,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 mModeIndicator.setText("RGB Camera");
                 mCenterTemperature.setText("--°C");
                 mFrameCounter.setText("RGB Mode");
+
+                // Dismiss any USB disconnect alerts
+                if (mAlertArea != null) {
+                    mAlertArea.setVisibility(View.GONE);
+                }
             });
 
-            Log.i(TAG, "RGB fallback camera started");
+            Log.i(TAG, "RGB fallback camera started successfully");
+            Toast.makeText(this, "Using RGB camera", Toast.LENGTH_SHORT).show();
 
+        } catch (RuntimeException e) {
+            Log.e(TAG, "Failed to start RGB fallback camera - RuntimeException: " + e.getMessage(), e);
+            Toast.makeText(this, "Failed to start RGB camera: " + e.getMessage(), Toast.LENGTH_LONG).show();
+
+            // Clean up on failure
+            if (mRgbCamera != null) {
+                try {
+                    mRgbCamera.release();
+                } catch (Exception ex) {
+                    Log.e(TAG, "Error releasing camera on failure", ex);
+                }
+                mRgbCamera = null;
+            }
+            mRgbCameraEnabled = false;
+            mUsingRgbFallback = false;
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start RGB fallback camera", e);
-            Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_SHORT).show();
+            Log.e(TAG, "Failed to start RGB fallback camera - Exception: " + e.getMessage(), e);
+            Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_LONG).show();
         }
     }
     
