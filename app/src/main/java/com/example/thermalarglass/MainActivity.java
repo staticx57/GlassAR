@@ -80,7 +80,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Format detection
     private enum BosonFormat {
         Y16,    // 16-bit radiometric (320×256)
-        I420    // 8-bit colorized YUV420 (640×512)
+        I420,   // 8-bit colorized YUV420 (640×512)
+        MJPEG   // MJPEG compressed (variable size, typically 150KB-350KB)
     }
     private BosonFormat mDetectedFormat = null;
 
@@ -1820,6 +1821,25 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (mDetectedFormat == null) {
                 Log.i(TAG, ">>> FORMAT AUTO-DETECTION <<<");
                 Log.i(TAG, "  Received frame size: " + available + " bytes");
+
+                // Check for MJPEG format first (JPEG magic bytes: 0xFF 0xD8)
+                frameData.mark();
+                if (available >= 2) {
+                    byte firstByte = frameData.get();
+                    byte secondByte = frameData.get();
+                    if (firstByte == (byte)0xFF && secondByte == (byte)0xD8) {
+                        mDetectedFormat = BosonFormat.MJPEG;
+                        Log.i(TAG, "✓ DETECTED: MJPEG format (JPEG compressed, variable size)");
+                        Log.i(TAG, "  Boson is in MJPEG mode - compressed 8-bit thermal");
+                        Log.w(TAG, "  ⚠ NOTE: MJPEG loses radiometric data! Use Boson serial port for temperatures");
+                        Log.i(TAG, "  Typical frame sizes: 150KB-350KB (varies with image complexity)");
+                        frameData.reset();
+                        return convertMJPEGToBitmap(frameData, available);
+                    }
+                }
+                frameData.reset();
+
+                // Check for uncompressed formats
                 Log.i(TAG, "  Y16 expected: " + Y16_FRAME_SIZE + " or " + Y16_FRAME_SIZE_WITH_TELEM + " bytes (320×256 or 320×258 with telemetry)");
                 Log.i(TAG, "  I420 expected: " + I420_FRAME_SIZE + " or " + I420_FRAME_SIZE_WITH_TELEM + " bytes (640×512 or 640×514 with telemetry)");
 
@@ -1840,10 +1860,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         Log.i(TAG, "✓ DETECTED: I420 format (640×512, YUV420 colorized, no telemetry)");
                     }
                 } else {
-                    Log.e(TAG, "✗ UNKNOWN FRAME SIZE: " + available + " bytes");
+                    Log.e(TAG, "✗ UNKNOWN FRAME FORMAT: " + available + " bytes");
                     Log.e(TAG, "  Expected Y16: " + Y16_FRAME_SIZE + " or " + Y16_FRAME_SIZE_WITH_TELEM);
                     Log.e(TAG, "  Expected I420: " + I420_FRAME_SIZE + " or " + I420_FRAME_SIZE_WITH_TELEM);
-                    Log.e(TAG, "  Check UVC negotiation logs above");
+                    Log.e(TAG, "  Expected MJPEG: Variable size, starts with 0xFF 0xD8");
+                    Log.e(TAG, "  Camera may be sending unexpected format!");
                     return null;
                 }
             }
@@ -1853,6 +1874,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return convertY16ToBitmap(frameData, available);
             } else if (mDetectedFormat == BosonFormat.I420) {
                 return convertI420ToBitmap(frameData, available);
+            } else if (mDetectedFormat == BosonFormat.MJPEG) {
+                return convertMJPEGToBitmap(frameData, available);
             }
 
             Log.e(TAG, "✗ No format detected - this should not happen!");
@@ -1972,6 +1995,89 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         } catch (Exception e) {
             Log.e(TAG, "Error converting I420 frame", e);
             return null;
+        }
+    }
+
+    /**
+     * Convert MJPEG format (Motion JPEG compressed) to bitmap
+     * Format: Variable size JPEG compressed frames
+     * NOTE: MJPEG loses radiometric temperature data - use serial port for temp readings
+     */
+    private Bitmap convertMJPEGToBitmap(ByteBuffer frameData, int available) {
+        try {
+            // Extract JPEG data from ByteBuffer
+            frameData.rewind();
+            byte[] jpegData = new byte[available];
+            frameData.get(jpegData);
+            frameData.rewind();
+
+            // Decode JPEG using Android's BitmapFactory
+            android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+
+            Bitmap decodedBitmap = android.graphics.BitmapFactory.decodeByteArray(jpegData, 0, jpegData.length, options);
+
+            if (decodedBitmap == null) {
+                Log.e(TAG, "✗ MJPEG decode failed - BitmapFactory returned null");
+                Log.e(TAG, "  Frame size: " + available + " bytes");
+                // Log first few bytes for debugging
+                if (jpegData.length >= 4) {
+                    Log.e(TAG, "  First 4 bytes: 0x" +
+                          String.format("%02X %02X %02X %02X",
+                                      jpegData[0], jpegData[1], jpegData[2], jpegData[3]));
+                }
+                return null;
+            }
+
+            // Log successful decode (first 5 frames only)
+            if (mFrameCount <= 5) {
+                Log.i(TAG, "✓ MJPEG decoded: " + available + " bytes → " +
+                          decodedBitmap.getWidth() + "×" + decodedBitmap.getHeight() + " bitmap");
+            }
+
+            // MJPEG from Boson is typically grayscale thermal data
+            // We can apply a colormap for better visualization
+            return applyColormapToBitmap(decodedBitmap);
+
+        } catch (Exception e) {
+            Log.e(TAG, "✗ Error converting MJPEG frame", e);
+            return null;
+        }
+    }
+
+    /**
+     * Apply thermal colormap to an existing bitmap
+     * Used for MJPEG frames that need colorization
+     */
+    private Bitmap applyColormapToBitmap(Bitmap grayscaleBitmap) {
+        try {
+            int width = grayscaleBitmap.getWidth();
+            int height = grayscaleBitmap.getHeight();
+
+            // Extract pixels
+            int[] pixels = new int[width * height];
+            grayscaleBitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+
+            // Apply colormap to each pixel
+            for (int i = 0; i < pixels.length; i++) {
+                // Extract grayscale value (use red channel as they're all equal in grayscale)
+                int pixel = pixels[i];
+                int grayValue = (pixel >> 16) & 0xFF;  // Red channel
+
+                // Apply thermal colormap
+                pixels[i] = applyThermalColormap(grayValue);
+            }
+
+            // Create new bitmap with colormap applied
+            Bitmap coloredBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            coloredBitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+
+            return coloredBitmap;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error applying colormap to bitmap", e);
+            // Return original bitmap if colormap fails
+            return grayscaleBitmap;
         }
     }
 
