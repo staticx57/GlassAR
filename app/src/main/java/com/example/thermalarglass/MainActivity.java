@@ -1608,27 +1608,57 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private Bitmap convertThermalToBitmap(ByteBuffer frameData) {
         try {
-            // Boson outputs 16-bit grayscale (actually YUYV, but we extract Y channel)
-            // For simplicity, we'll convert to 8-bit grayscale and apply false color
+            // Boson 320 outputs YUYV format: 320x256x2 = 163,840 bytes
+            // YUYV packing: Y0 U0 Y1 V0 (4 bytes for 2 pixels)
+            final int EXPECTED_FRAME_SIZE = BOSON_WIDTH * BOSON_HEIGHT * 2;
 
+            // Validate frame size before processing
+            if (frameData == null) {
+                Log.w(TAG, "Null frame data");
+                return null;
+            }
+
+            int available = frameData.remaining();
+            if (available < EXPECTED_FRAME_SIZE) {
+                Log.w(TAG, "Incomplete frame: expected " + EXPECTED_FRAME_SIZE +
+                           " bytes, got " + available);
+                return null;
+            }
+
+            // Make a defensive copy to prevent corruption if USB layer reuses buffer
+            // This prevents flickering caused by the buffer being overwritten mid-render
             frameData.rewind();
+            byte[] frameCopy = new byte[EXPECTED_FRAME_SIZE];
+            frameData.get(frameCopy);
 
-            // Create bitmap (grayscale first)
+            // Create bitmap
             Bitmap bitmap = Bitmap.createBitmap(BOSON_WIDTH, BOSON_HEIGHT, Bitmap.Config.ARGB_8888);
 
             // Convert to pixel array
             int[] pixels = new int[BOSON_WIDTH * BOSON_HEIGHT];
 
-            // Extract luminance values and apply thermal colormap
-            for (int i = 0; i < pixels.length && frameData.remaining() >= 2; i++) {
-                // Read 16-bit value (assuming YUV format - take Y channel)
-                int y = frameData.get() & 0xFF;
-                frameData.get();  // Skip U/V byte
+            // Extract luminance (Y) values from YUYV format
+            // In YUYV: every odd byte is Y (luminance), even bytes are U/V (chrominance)
+            // We extract Y and skip U/V since we only need brightness for thermal imaging
+            int byteIndex = 0;
+            for (int i = 0; i < pixels.length; i++) {
+                if (byteIndex + 1 >= frameCopy.length) {
+                    Log.w(TAG, "Buffer underrun at pixel " + i);
+                    break;
+                }
 
-                // Apply thermal colormap (iron/hot color scheme)
+                // Read Y value (luminance) from copied buffer
+                int y = frameCopy[byteIndex] & 0xFF;
+                byteIndex++; // Move to next byte
+
+                // Skip U or V byte (chrominance - alternates)
+                byteIndex++; // Skip chrominance byte
+
+                // Apply thermal colormap to luminance value
                 pixels[i] = applyThermalColormap(y);
             }
 
+            // Set all pixels at once (more efficient than pixel-by-pixel)
             bitmap.setPixels(pixels, 0, BOSON_WIDTH, 0, 0, BOSON_WIDTH, BOSON_HEIGHT);
             return bitmap;
 
