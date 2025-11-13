@@ -2233,6 +2233,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             // Convert thermal frame to bitmap and draw
             Bitmap thermalBitmap = convertThermalToBitmap(frameData);
             if (thermalBitmap != null) {
+                // Log bitmap size before rendering (first 3 frames only)
+                if (mFrameCount <= 3) {
+                    Log.d(TAG, "Rendering bitmap: " + thermalBitmap.getWidth() + "×" +
+                              thermalBitmap.getHeight() + " to display: " + GLASS_WIDTH + "×" + GLASS_HEIGHT);
+                }
+
                 // Store latest frame for snapshot capture
                 mLatestThermalBitmap = thermalBitmap;
 
@@ -2503,6 +2509,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (mFrameCount <= 5) {
                 Log.i(TAG, "✓ MJPEG decoded: " + available + " bytes → " +
                           decodedBitmap.getWidth() + "×" + decodedBitmap.getHeight() + " bitmap");
+                Log.i(TAG, "  Bitmap config: " + decodedBitmap.getConfig());
+                Log.i(TAG, "  Expected size: " + BOSON_WIDTH + "×" + BOSON_HEIGHT);
+                if (decodedBitmap.getWidth() != BOSON_WIDTH || decodedBitmap.getHeight() != BOSON_HEIGHT) {
+                    Log.w(TAG, "  ⚠ SIZE MISMATCH! MJPEG decoded to different resolution than expected");
+                    Log.w(TAG, "  This may require scaling or the Boson may be in a different mode");
+                }
             }
 
             // MJPEG from Boson is typically grayscale thermal data
@@ -2523,6 +2535,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         try {
             int width = grayscaleBitmap.getWidth();
             int height = grayscaleBitmap.getHeight();
+
+            // Log colormap application (first 3 frames only)
+            if (mFrameCount <= 3) {
+                Log.d(TAG, "Applying colormap to " + width + "×" + height + " bitmap");
+            }
 
             // Extract pixels
             int[] pixels = new int[width * height];
