@@ -476,60 +476,72 @@ public class NativeUVCCamera {
                 if (bytesRead > 0) {
                     // Check for UVC payload header (first 2-12 bytes)
                     int headerLength = buffer[0] & 0xFF;
+                    boolean endOfFrame = false;
 
                     // VALIDATE: UVC spec requires header length 2-12 bytes (or 0 for no header)
                     // Reject obviously invalid values to prevent data corruption
                     if (headerLength == 1 || headerLength > 12) {
                         if (frameCount < 5) {
                             Log.w(TAG, "Invalid UVC header length: " + headerLength +
-                                      " (expected 0, or 2-12) - treating as no header");
+                                      " (expected 0, or 2-12) - camera sends headerless packets");
                         }
                         headerLength = 0;  // Treat as no header
                     }
 
+                    // Extract payload based on whether we have a valid header
+                    int payloadLength;
+                    int payloadOffset;
+
                     if (headerLength > 0 && headerLength < bytesRead) {
+                        // Has valid UVC header
+                        int bitField = buffer[1] & 0xFF;
+                        endOfFrame = (bitField & 0x02) != 0;
+
                         // Log header details for first few packets (debugging)
                         if (frameCount == 0 && frameBuffer.position() < 1000) {
-                            int bitField = buffer[1] & 0xFF;
-                            boolean eof = (bitField & 0x02) != 0;
                             boolean error = (bitField & 0x40) != 0;
                             Log.d(TAG, "UVC Header: len=" + headerLength +
-                                      ", EOF=" + eof + ", ERR=" + error +
+                                      ", EOF=" + endOfFrame + ", ERR=" + error +
                                       ", bits=0x" + String.format("%02X", bitField));
                         }
 
-                        // Extract payload data (skip header)
-                        int payloadLength = bytesRead - headerLength;
+                        payloadLength = bytesRead - headerLength;
+                        payloadOffset = headerLength;
+                    } else {
+                        // No header (headerLength == 0) - treat entire packet as payload
+                        payloadLength = bytesRead;
+                        payloadOffset = 0;
+                        endOfFrame = false;  // No header means no EOF bit
+                    }
 
-                        // Accumulate frame data
-                        if (frameBuffer.remaining() >= payloadLength) {
-                            frameBuffer.put(buffer, headerLength, payloadLength);
+                    // Accumulate frame data (common for both header and headerless)
+                    if (frameBuffer.remaining() >= payloadLength) {
+                        frameBuffer.put(buffer, payloadOffset, payloadLength);
+                    } else {
+                        Log.w(TAG, "Frame buffer overflow! Remaining: " + frameBuffer.remaining() +
+                                  ", needed: " + payloadLength + " - discarding and starting new frame");
+                        frameBuffer.clear();
+                        mjpegDetected = false;  // Reset format detection for new frame
+                        frameStartTime = System.currentTimeMillis();  // Reset timeout
+
+                        // Only add current payload if it looks like a frame start (JPEG SOI for MJPEG)
+                        if (payloadLength >= 2 &&
+                            buffer[payloadOffset] == (byte)0xFF &&
+                            buffer[payloadOffset + 1] == (byte)0xD8) {
+                            Log.i(TAG, "New frame starts with JPEG SOI - good recovery");
+                            frameBuffer.put(buffer, payloadOffset, payloadLength);
                         } else {
-                            Log.w(TAG, "Frame buffer overflow! Remaining: " + frameBuffer.remaining() +
-                                      ", needed: " + payloadLength + " - discarding and starting new frame");
-                            frameBuffer.clear();
-                            mjpegDetected = false;  // Reset format detection for new frame
-                            frameStartTime = System.currentTimeMillis();  // Reset timeout
-
-                            // Only add current payload if it looks like a frame start (JPEG SOI for MJPEG)
-                            if (payloadLength >= 2 &&
-                                buffer[headerLength] == (byte)0xFF &&
-                                buffer[headerLength + 1] == (byte)0xD8) {
-                                Log.i(TAG, "New frame starts with JPEG SOI - good recovery");
-                                frameBuffer.put(buffer, headerLength, payloadLength);
-                            } else {
-                                Log.w(TAG, "Discarding payload - doesn't start with JPEG SOI");
-                                // Don't add anything, wait for next packet
-                            }
+                            Log.w(TAG, "Discarding payload - doesn't start with JPEG SOI");
+                            // Don't add anything, wait for next packet
                         }
+                    }
 
-                        // Frame completion detection
-                        int accumulated = frameBuffer.position();
-                        boolean frameComplete = false;
-                        boolean endOfFrame = (buffer[1] & 0x02) != 0;
+                    // Frame completion detection (common for both header and headerless)
+                    int accumulated = frameBuffer.position();
+                    boolean frameComplete = false;
 
-                        // MJPEG detection: Check if accumulated data starts with JPEG magic bytes
-                        if (!mjpegDetected && accumulated >= 2) {
+                    // MJPEG detection: Check if accumulated data starts with JPEG magic bytes
+                    if (!mjpegDetected && accumulated >= 2) {
                             // Save current position before checking magic bytes
                             int savedPosition = frameBuffer.position();
                             frameBuffer.position(0);
@@ -641,12 +653,6 @@ public class NativeUVCCamera {
                                 lastLogTime = now;
                             }
                         }
-                    } else if (headerLength == 0) {
-                        // Some cameras send packets with no header - treat as payload
-                        if (frameBuffer.remaining() >= bytesRead) {
-                            frameBuffer.put(buffer, 0, bytesRead);
-                        }
-                    }
                 } else if (bytesRead < 0) {
                     // Error occurred
                     errorCount++;
