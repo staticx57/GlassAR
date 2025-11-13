@@ -334,10 +334,32 @@ class Boson320Processor:
     def process_frame(self, frame_data, mode='building'):
         """Main processing pipeline"""
         start_time = time.time()
-        
+
         try:
-            # Decode frame
-            frame = np.frombuffer(frame_data, dtype=np.uint16).reshape(self.resolution[1], self.resolution[0])
+            # Smart format detection and decoding
+            # Check if frame is MJPEG (JPEG magic bytes: 0xFF 0xD8)
+            is_mjpeg = len(frame_data) >= 2 and frame_data[0] == 0xFF and frame_data[1] == 0xD8
+
+            if is_mjpeg:
+                # MJPEG format - decompress JPEG
+                logger.debug(f"MJPEG frame detected ({len(frame_data)} bytes), decompressing...")
+                frame_array = np.frombuffer(frame_data, dtype=np.uint8)
+                frame_bgr = cv2.imdecode(frame_array, cv2.IMREAD_GRAYSCALE)
+
+                if frame_bgr is None:
+                    logger.error("Failed to decode MJPEG frame")
+                    return None
+
+                # MJPEG from Boson is 8-bit grayscale, convert to 16-bit for processing
+                # Scale 0-255 → 0-65535 to match Y16 range
+                frame = (frame_bgr.astype(np.uint16) * 257)  # 257 = 65535/255
+
+                logger.debug(f"MJPEG decoded: {frame.shape}, dtype={frame.dtype}")
+
+            else:
+                # Raw Y16 format (16-bit radiometric)
+                logger.debug(f"Y16 frame detected ({len(frame_data)} bytes), reshaping...")
+                frame = np.frombuffer(frame_data, dtype=np.uint16).reshape(self.resolution[1], self.resolution[0])
             
             # Calibrate to temperature
             temp_frame = self.calibrate_thermal(frame)
