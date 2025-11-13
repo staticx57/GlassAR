@@ -429,9 +429,10 @@ public class NativeUVCCamera {
         byte[] buffer = new byte[bufferSize];
 
         // Frame accumulation buffer - allocate for largest possible frame
+        // MJPEG: Variable size, typically 150KB-350KB for Boson
         // Y16 format: 320×256×2 = 163,840 bytes
         // I420 format: 640×512×1.5 = 491,520 bytes
-        int maxFrameSize = 640 * 512 * 3 / 2;  // Max for I420
+        int maxFrameSize = 1024 * 1024;  // 1MB buffer for MJPEG or uncompressed
         ByteBuffer frameBuffer = ByteBuffer.allocate(maxFrameSize);
 
         // Expected frame sizes based on negotiation
@@ -440,6 +441,9 @@ public class NativeUVCCamera {
         final int Y16_SIZE_WITH_TELEM = mWidth * (mHeight + 2) * 2;  // 165,120 bytes for 320×258 (with telemetry)
         final int I420_SIZE = 640 * 512 * 3 / 2;               // 491,520 bytes
         final int I420_SIZE_WITH_TELEM = 640 * 514 * 3 / 2;    // 494,592 bytes (with telemetry)
+
+        // MJPEG detection
+        boolean mjpegDetected = false;
 
         int endpointType = mStreamingEndpoint.getType();
         String transferType = endpointType == UsbConstants.USB_ENDPOINT_XFER_ISOC ? "isochronous" : "bulk";
@@ -485,37 +489,76 @@ public class NativeUVCCamera {
                             frameBuffer.put(buffer, headerLength, payloadLength);
                         }
 
-                        // SIZE-BASED frame completion (more reliable than end-of-frame bit)
+                        // Frame completion detection
                         int accumulated = frameBuffer.position();
                         boolean frameComplete = false;
                         boolean endOfFrame = (buffer[1] & 0x02) != 0;
 
-                        // Diagnostic: Log when we're close to target size
-                        if (frameCount < 5 && accumulated > 160000) {
-                            Log.d(TAG, "Frame accumulation: " + accumulated + " bytes, EOF bit=" + endOfFrame);
-                            Log.d(TAG, "  Valid sizes: Y16=" + Y16_SIZE + ", Y16+telem=" + Y16_SIZE_WITH_TELEM +
-                                      ", I420=" + I420_SIZE + ", I420+telem=" + I420_SIZE_WITH_TELEM);
+                        // MJPEG detection: Check if accumulated data starts with JPEG magic bytes
+                        if (!mjpegDetected && accumulated >= 2) {
+                            frameBuffer.mark();
+                            frameBuffer.position(0);
+                            byte firstByte = frameBuffer.get();
+                            byte secondByte = frameBuffer.get();
+                            frameBuffer.reset();
+
+                            // JPEG magic bytes: 0xFF 0xD8
+                            if (firstByte == (byte)0xFF && secondByte == (byte)0xD8) {
+                                mjpegDetected = true;
+                                Log.i(TAG, "✓ MJPEG format detected (JPEG magic bytes found)");
+                                Log.i(TAG, "  Boson is sending compressed MJPEG instead of uncompressed Y16/I420");
+                                Log.i(TAG, "  Will use end-of-frame bit and JPEG EOI marker for frame detection");
+                            }
                         }
 
-                        // Accept exact frame sizes (with or without telemetry)
-                        if (accumulated == Y16_SIZE) {
-                            frameComplete = true;
-                            if (frameCount < 5) Log.i(TAG, "✓ Y16 frame (320×256, no telemetry)");
-                        } else if (accumulated == Y16_SIZE_WITH_TELEM) {
-                            frameComplete = true;
-                            if (frameCount < 5) Log.i(TAG, "✓ Y16 frame (320×258, WITH 2 telemetry rows)");
-                        } else if (accumulated == I420_SIZE) {
-                            frameComplete = true;
-                            if (frameCount < 5) Log.i(TAG, "✓ I420 frame (640×512, no telemetry)");
-                        } else if (accumulated == I420_SIZE_WITH_TELEM) {
-                            frameComplete = true;
-                            if (frameCount < 5) Log.i(TAG, "✓ I420 frame (640×514, WITH 2 telemetry rows)");
+                        // MJPEG frame completion: Use end-of-frame bit OR JPEG EOI marker
+                        if (mjpegDetected) {
+                            // Check for JPEG end-of-image marker (0xFF 0xD9) in last 2 bytes of payload
+                            boolean jpegEOI = false;
+                            if (accumulated >= 2) {
+                                int pos = frameBuffer.position();
+                                byte lastByte = frameBuffer.get(pos - 1);
+                                byte secondLastByte = frameBuffer.get(pos - 2);
+                                jpegEOI = (secondLastByte == (byte)0xFF && lastByte == (byte)0xD9);
+                            }
+
+                            // Frame complete if end-of-frame bit is set OR JPEG EOI marker found
+                            if (endOfFrame || jpegEOI) {
+                                frameComplete = true;
+                                if (frameCount < 5) {
+                                    Log.i(TAG, "✓ MJPEG frame complete: " + accumulated + " bytes (EOF=" + endOfFrame + ", EOI=" + jpegEOI + ")");
+                                }
+                            }
                         }
-                        // If accumulated exceeds maximum possible size, frame is corrupted - restart
-                        else if (accumulated > I420_SIZE_WITH_TELEM) {
-                            Log.w(TAG, "Frame buffer overflow: " + accumulated + " bytes exceeds maximum " +
-                                      I420_SIZE_WITH_TELEM + " - restarting frame");
-                            frameBuffer.clear();
+                        // Uncompressed frame completion: SIZE-BASED detection
+                        else {
+                            // Diagnostic: Log when we're close to target size
+                            if (frameCount < 5 && accumulated > 160000) {
+                                Log.d(TAG, "Frame accumulation: " + accumulated + " bytes, EOF bit=" + endOfFrame);
+                                Log.d(TAG, "  Valid sizes: Y16=" + Y16_SIZE + ", Y16+telem=" + Y16_SIZE_WITH_TELEM +
+                                          ", I420=" + I420_SIZE + ", I420+telem=" + I420_SIZE_WITH_TELEM);
+                            }
+
+                            // Accept exact frame sizes (with or without telemetry)
+                            if (accumulated == Y16_SIZE) {
+                                frameComplete = true;
+                                if (frameCount < 5) Log.i(TAG, "✓ Y16 frame (320×256, no telemetry)");
+                            } else if (accumulated == Y16_SIZE_WITH_TELEM) {
+                                frameComplete = true;
+                                if (frameCount < 5) Log.i(TAG, "✓ Y16 frame (320×258, WITH 2 telemetry rows)");
+                            } else if (accumulated == I420_SIZE) {
+                                frameComplete = true;
+                                if (frameCount < 5) Log.i(TAG, "✓ I420 frame (640×512, no telemetry)");
+                            } else if (accumulated == I420_SIZE_WITH_TELEM) {
+                                frameComplete = true;
+                                if (frameCount < 5) Log.i(TAG, "✓ I420 frame (640×514, WITH 2 telemetry rows)");
+                            }
+                            // If accumulated exceeds maximum possible size, frame is corrupted - restart
+                            else if (accumulated > I420_SIZE_WITH_TELEM) {
+                                Log.w(TAG, "Frame buffer overflow: " + accumulated + " bytes exceeds maximum " +
+                                          I420_SIZE_WITH_TELEM + " - restarting frame");
+                                frameBuffer.clear();
+                            }
                         }
 
                         if (frameComplete && frameBuffer.position() > 0) {
