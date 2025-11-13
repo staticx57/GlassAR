@@ -485,17 +485,26 @@ public class NativeUVCCamera {
                         // SIZE-BASED frame completion (more reliable than end-of-frame bit)
                         int accumulated = frameBuffer.position();
                         boolean frameComplete = false;
+                        boolean endOfFrame = (buffer[1] & 0x02) != 0;
 
-                        // Check if we've accumulated exactly one of the expected frame sizes
-                        if (accumulated == Y16_SIZE || accumulated == I420_SIZE) {
-                            frameComplete = true;
+                        // Diagnostic: Log when we're close to target size
+                        if (frameCount < 5 && accumulated > 160000) {
+                            Log.d(TAG, "Frame accumulation: " + accumulated + " bytes, EOF bit=" + endOfFrame +
+                                      ", need " + Y16_SIZE + " for Y16 or " + I420_SIZE + " for I420");
                         }
-                        // Or check end-of-frame bit as fallback (but only if we're close to expected size)
-                        else if (accumulated >= (Y16_SIZE - 1024) && accumulated <= (I420_SIZE + 1024)) {
-                            boolean endOfFrame = (buffer[1] & 0x02) != 0;
-                            if (endOfFrame) {
-                                frameComplete = true;
-                            }
+
+                        // ONLY accept exact frame sizes - no fallback
+                        if (accumulated == Y16_SIZE) {
+                            frameComplete = true;
+                            if (frameCount < 5) Log.i(TAG, "✓ Exact Y16 frame size matched!");
+                        } else if (accumulated == I420_SIZE) {
+                            frameComplete = true;
+                            if (frameCount < 5) Log.i(TAG, "✓ Exact I420 frame size matched!");
+                        }
+                        // If accumulated exceeds expected size, frame is corrupted - restart
+                        else if (accumulated > I420_SIZE) {
+                            Log.w(TAG, "Frame buffer overflow: " + accumulated + " bytes exceeds maximum " + I420_SIZE + " - restarting frame");
+                            frameBuffer.clear();
                         }
 
                         if (frameComplete && frameBuffer.position() > 0) {
