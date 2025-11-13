@@ -132,6 +132,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private long mLastFPSUpdate = 0;
     private int mFPSFrameCount = 0;
 
+    // Performance tracking for negotiation
+    private static final int PERFORMANCE_SAMPLE_COUNT = 10;
+    private float[] mFPSSamples = new float[PERFORMANCE_SAMPLE_COUNT];
+    private int mFPSSampleIndex = 0;
+    private int mLowFPSCount = 0;
+    private boolean mNegotiationPending = false;
+    private long mLastNegotiationTime = 0;
+    private static final long NEGOTIATION_COOLDOWN_MS = 60000;  // 1 minute
+
     // Display modes
     public static final String MODE_THERMAL_ONLY = "thermal_only";
     public static final String MODE_THERMAL_RGB_FUSION = "thermal_rgb_fusion";
@@ -1687,30 +1696,59 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /**
-     * Send settings sync to server
+     * Send settings sync to server with ownership metadata and performance metrics
      */
     private void sendSettingsSync() {
         try {
             JSONObject payload = new JSONObject();
-            JSONObject settings = new JSONObject();
+            long currentTime = System.currentTimeMillis();
 
-            // Glass settings
-            settings.put("format", mDetectedFormat != null ? mDetectedFormat.toString() : "unknown");
-            settings.put("has_temperature", mDetectedFormat == BosonFormat.Y16);
-            settings.put("display_mode", mSmartDisplay != null ?
+            // Glass-owned settings (authoritative)
+            JSONObject glassOwned = new JSONObject();
+            JSONObject formatSetting = new JSONObject();
+            formatSetting.put("value", mDetectedFormat != null ? mDetectedFormat.toString() : "unknown");
+            formatSetting.put("ownership", "glass");
+            formatSetting.put("last_modified", currentTime);
+            glassOwned.put("format", formatSetting);
+
+            JSONObject displayModeSetting = new JSONObject();
+            displayModeSetting.put("value", mSmartDisplay != null ?
                 mSmartDisplay.getDisplayMode().toString() : "STANDARD");
-            settings.put("current_mode", mCurrentMode);
-            settings.put("frame_skip", 1);  // Currently no frame skip
-            settings.put("server_url", getServerUrl());
-            settings.put("app_version", BuildConfig.VERSION_NAME);
-            settings.put("uptime_ms", android.os.SystemClock.elapsedRealtime());
-            settings.put("fps_actual", mCurrentFPS);
+            displayModeSetting.put("ownership", "glass");
+            displayModeSetting.put("last_modified", currentTime);
+            glassOwned.put("display_mode", displayModeSetting);
 
-            payload.put("glass_settings", settings);
-            payload.put("timestamp", System.currentTimeMillis());
+            JSONObject frameSkipSetting = new JSONObject();
+            frameSkipSetting.put("value", 1);  // Currently no frame skip
+            frameSkipSetting.put("ownership", "glass");
+            frameSkipSetting.put("last_modified", currentTime);
+            glassOwned.put("frame_skip", frameSkipSetting);
+
+            payload.put("glass_owned_settings", glassOwned);
+
+            // Performance metrics for negotiation
+            JSONObject performance = new JSONObject();
+            performance.put("fps_actual", mCurrentFPS);
+            performance.put("fps_target", 30);
+            performance.put("frame_drop_rate", calculateFrameDropRate());
+            performance.put("cpu_usage", getCPUUsage());
+            performance.put("battery_level", mBatteryLevel);
+            performance.put("thermal_state", getThermalState());
+            payload.put("performance_metrics", performance);
+
+            // General info
+            payload.put("app_version", BuildConfig.VERSION_NAME);
+            payload.put("uptime_ms", android.os.SystemClock.elapsedRealtime());
+            payload.put("timestamp", currentTime);
+
+            // Check if negotiation needed
+            if (shouldRequestNegotiation()) {
+                payload.put("negotiation_request", createNegotiationRequest());
+            }
 
             mSocket.emit("settings_sync", payload);
-            Log.d(TAG, "Settings sync sent (fps=" + String.format("%.1f", mCurrentFPS) + ")");
+            Log.d(TAG, "Settings sync sent (fps=" + String.format("%.1f", mCurrentFPS) +
+                ", thermal=" + getThermalState() + ")");
 
         } catch (JSONException e) {
             Log.e(TAG, "Error creating settings sync", e);
@@ -1718,54 +1756,178 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /**
-     * Handle settings sync response from server
+     * Calculate frame drop rate
+     */
+    private float calculateFrameDropRate() {
+        if (mCurrentFPS <= 0) return 0.0f;
+        float targetFPS = 30.0f;
+        return Math.max(0.0f, (targetFPS - mCurrentFPS) / targetFPS);
+    }
+
+    /**
+     * Get CPU usage (simplified estimate based on FPS)
+     */
+    private int getCPUUsage() {
+        // Simplified: If FPS is low, assume CPU is high
+        if (mCurrentFPS < 15) return 95;
+        if (mCurrentFPS < 20) return 75;
+        if (mCurrentFPS < 25) return 60;
+        return 45;
+    }
+
+    /**
+     * Get thermal state
+     */
+    private String getThermalState() {
+        // Could integrate with Android PowerManager.getThermalHeadroom()
+        // For now, estimate based on FPS degradation
+        if (mCurrentFPS < 10) return "throttling";
+        if (mCurrentFPS < 15) return "hot";
+        if (mCurrentFPS < 20) return "warm";
+        return "normal";
+    }
+
+    /**
+     * Check if we should request negotiation (ML model downgrade)
+     */
+    private boolean shouldRequestNegotiation() {
+        if (mNegotiationPending) return false;
+
+        long timeSinceLastNegotiation = System.currentTimeMillis() - mLastNegotiationTime;
+        if (timeSinceLastNegotiation < NEGOTIATION_COOLDOWN_MS) return false;
+
+        // Track low FPS samples
+        mFPSSamples[mFPSSampleIndex] = mCurrentFPS;
+        mFPSSampleIndex = (mFPSSampleIndex + 1) % PERFORMANCE_SAMPLE_COUNT;
+
+        // Count samples below threshold
+        int lowSamples = 0;
+        for (float fps : mFPSSamples) {
+            if (fps > 0 && fps < 15) lowSamples++;
+        }
+
+        // Request negotiation if most recent samples are low
+        return lowSamples >= 7;  // 70% of samples are low
+    }
+
+    /**
+     * Create negotiation request for lighter ML model
+     */
+    private JSONObject createNegotiationRequest() throws JSONException {
+        JSONObject request = new JSONObject();
+        request.put("setting", "ml_model_complexity");
+        request.put("proposed_value", "light");
+        request.put("current_value", "medium");  // Assuming default
+        request.put("reason", "performance_degradation");
+
+        JSONObject metrics = new JSONObject();
+        metrics.put("fps_target", 30);
+        metrics.put("fps_actual", mCurrentFPS);
+        metrics.put("frame_drop_rate", calculateFrameDropRate());
+        request.put("metrics", metrics);
+
+        mNegotiationPending = true;
+        mLastNegotiationTime = System.currentTimeMillis();
+        Log.i(TAG, "Requesting ML model downgrade due to low FPS: " + mCurrentFPS);
+
+        return request;
+    }
+
+    /**
+     * Handle settings sync response from server with ownership and negotiation
      */
     private void handleSettingsSyncResponse(JSONObject data) {
         try {
-            String syncStatus = data.getString("sync_status");
-            JSONObject serverSettings = data.getJSONObject("server_settings");
+            String syncStatus = data.optString("sync_status", "unknown");
+            Log.d(TAG, "Settings sync response: status=" + syncStatus);
 
-            // Log server info
-            boolean modelLoaded = serverSettings.getBoolean("model_loaded");
-            int maxFps = serverSettings.getInt("max_fps");
-            Log.d(TAG, "Server sync: status=" + syncStatus +
-                ", model=" + (modelLoaded ? "ready" : "loading") +
-                ", max_fps=" + maxFps);
-
-            // Check for mismatches
-            if (data.has("mismatches") && data.getJSONArray("mismatches").length() > 0) {
-                JSONArray mismatches = data.getJSONArray("mismatches");
-                Log.w(TAG, "Settings mismatches: " + mismatches.toString());
-
-                // Show notification for important mismatches
-                runOnUiThread(() -> {
-                    Toast.makeText(this,
-                        "Settings synced with server",
-                        Toast.LENGTH_SHORT).show();
-                });
-            }
-
-            // Update mode if server has different mode
-            if (serverSettings.has("processing_mode")) {
-                String serverMode = serverSettings.getString("processing_mode");
-                if (!serverMode.equals(mCurrentMode)) {
-                    Log.i(TAG, "Syncing mode from server: " + mCurrentMode + " → " + serverMode);
-                    final String newMode = serverMode;
-                    runOnUiThread(() -> {
-                        mCurrentMode = newMode;
-                        updateModeIndicator();
-                    });
+            // 1. Handle Glass-owned settings acknowledgment
+            if (data.has("accepted_settings")) {
+                JSONArray accepted = data.getJSONArray("accepted_settings");
+                if (accepted.length() > 0) {
+                    Log.i(TAG, "Server accepted Glass settings: " + accepted.toString());
                 }
             }
 
-            // Log format preference if server suggests one
-            if (serverSettings.has("format_preferred")) {
-                String preferredFormat = serverSettings.getString("format_preferred");
-                Log.i(TAG, "Server prefers format: " + preferredFormat);
+            // 2. Handle server-owned settings (authoritative - must accept)
+            if (data.has("server_owned_settings")) {
+                JSONObject serverOwned = data.getJSONObject("server_owned_settings");
+
+                // Processing mode - server owns this
+                if (serverOwned.has("processing_mode")) {
+                    JSONObject modeSetting = serverOwned.getJSONObject("processing_mode");
+                    String newMode = modeSetting.getString("value");
+                    String ownership = modeSetting.optString("ownership", "server");
+
+                    if ("server".equals(ownership) && !newMode.equals(mCurrentMode)) {
+                        Log.i(TAG, "Server changed processing mode: " + mCurrentMode + " → " + newMode);
+                        final String finalMode = newMode;
+                        runOnUiThread(() -> {
+                            mCurrentMode = finalMode;
+                            updateModeIndicator();
+                            Toast.makeText(this,
+                                "Mode: " + finalMode,
+                                Toast.LENGTH_SHORT).show();
+                        });
+                    }
+                }
+            }
+
+            // 3. Handle negotiation response
+            if (data.has("negotiation_response")) {
+                handleNegotiationResponse(data.getJSONObject("negotiation_response"));
+            }
+
+            // 4. Log server capabilities
+            if (data.has("server_settings")) {
+                JSONObject serverSettings = data.getJSONObject("server_settings");
+                boolean modelLoaded = serverSettings.optBoolean("model_loaded", false);
+                String mlModel = serverSettings.optString("ml_model", "unknown");
+                Log.d(TAG, "Server: model=" + mlModel + ", loaded=" + modelLoaded);
             }
 
         } catch (JSONException e) {
             Log.e(TAG, "Error parsing settings sync response", e);
+        }
+    }
+
+    /**
+     * Handle negotiation response from server
+     */
+    private void handleNegotiationResponse(JSONObject response) {
+        try {
+            String setting = response.getString("setting");
+            String decision = response.getString("decision");
+            String reason = response.optString("reason", "");
+
+            Log.i(TAG, "Negotiation response for " + setting + ": " + decision);
+            Log.i(TAG, "  Reason: " + reason);
+
+            if ("accepted".equals(decision)) {
+                String newValue = response.getString("new_value");
+                Log.i(TAG, "  ✓ Server accepted negotiation: " + setting + " → " + newValue);
+
+                runOnUiThread(() -> {
+                    Toast.makeText(this,
+                        "Performance mode adjusted",
+                        Toast.LENGTH_SHORT).show();
+                });
+
+                // Reset negotiation state
+                mNegotiationPending = false;
+
+            } else if ("rejected".equals(decision)) {
+                Log.w(TAG, "  ✗ Server rejected negotiation: " + reason);
+                mNegotiationPending = false;
+
+            } else if ("suggested".equals(decision)) {
+                String proposedValue = response.getString("proposed_value");
+                Log.i(TAG, "  → Server suggests: " + setting + " = " + proposedValue);
+                // Could show user prompt to accept suggestion
+            }
+
+        } catch (JSONException e) {
+            Log.e(TAG, "Error parsing negotiation response", e);
         }
     }
 

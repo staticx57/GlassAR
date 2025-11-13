@@ -2,7 +2,21 @@
 
 ## Overview
 
-Periodic bidirectional settings synchronization between Glass and server to ensure both sides stay aligned on configuration, capabilities, and operating parameters.
+Bidirectional settings synchronization with **ownership model** and **performance-based negotiation** between Glass and server.
+
+**⚠️ UPDATED:** This protocol now implements ownership boundaries and ML model negotiation.
+For complete details on ownership rules, negotiation logic, and performance-based optimization, see **[SETTINGS_OWNERSHIP.md](./SETTINGS_OWNERSHIP.md)**.
+
+**Key Features:**
+- ✅ **Clear ownership** - Glass owns format/UI, Server owns ML/processing
+- ✅ **Performance negotiation** - Automatic ML model adjustment based on FPS
+- ✅ **Graceful degradation** - Glass requests lighter model when struggling
+- ✅ **Intelligent upgrades** - Server suggests heavier model when Glass performs well
+
+**Quick Summary:**
+- **Glass-owned**: `format`, `display_mode`, `frame_skip` (authoritative)
+- **Server-owned**: `processing_mode`, `ml_model`, `detection_threshold` (authoritative)
+- **Negotiated**: `ml_model_complexity` (performance-based, Glass can request changes)
 
 ---
 

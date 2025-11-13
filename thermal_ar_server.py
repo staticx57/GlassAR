@@ -627,72 +627,189 @@ def handle_stats_request():
     """Send current statistics"""
     emit('stats', processor.stats)
 
+# ML model state for negotiation
+current_ml_model = 'yolov8s'  # Default: medium complexity
+ml_model_map = {
+    'light': 'yolov8n',
+    'medium': 'yolov8s',
+    'heavy': 'yolov8m'
+}
+
 @socketio.on('settings_sync')
 def handle_settings_sync(data):
-    """Periodic settings synchronization from Glass"""
+    """Bidirectional settings synchronization with ownership and negotiation"""
+    global current_ml_model
+
     try:
-        glass_settings = data.get('glass_settings', {})
         client_timestamp = data.get('timestamp')
+        performance = data.get('performance_metrics', {})
 
-        # Log Glass settings
-        logger.info(f"Settings sync from Glass:")
-        logger.info(f"  Format: {glass_settings.get('format')}")
-        logger.info(f"  Display Mode: {glass_settings.get('display_mode')}")
-        logger.info(f"  Processing Mode: {glass_settings.get('current_mode')}")
-        logger.info(f"  FPS: {glass_settings.get('fps_actual', 0):.1f}")
-        logger.info(f"  App Version: {glass_settings.get('app_version')}")
+        # 1. Handle Glass-owned settings (authoritative - always accept)
+        glass_owned = data.get('glass_owned_settings', {})
+        accepted_settings = []
 
-        # Check for mismatches
-        mismatches = []
+        for setting_name, setting_data in glass_owned.items():
+            if isinstance(setting_data, dict) and setting_data.get('ownership') == 'glass':
+                value = setting_data.get('value')
+                logger.info(f"Accepted Glass setting: {setting_name}={value}")
+                accepted_settings.append(setting_name)
 
-        # Compare processing mode
-        glass_mode = glass_settings.get('current_mode', '')
-        if glass_mode != current_mode:
-            mismatches.append({
-                'setting': 'current_mode',
-                'glass_value': glass_mode,
-                'server_value': current_mode
-            })
-            logger.warning(f"Mode mismatch: Glass={glass_mode}, Server={current_mode}")
+                # Update server expectations based on Glass settings
+                if setting_name == 'format':
+                    logger.info(f"  → Glass format: {value}")
+                elif setting_name == 'display_mode':
+                    logger.info(f"  → Glass display mode: {value}")
 
-        # Check format compatibility
-        glass_format = glass_settings.get('format', 'unknown')
-        if glass_format not in ['MJPEG', 'Y16', 'I420', 'unknown']:
-            mismatches.append({
-                'setting': 'format',
-                'glass_value': glass_format,
-                'server_value': 'unsupported'
-            })
-            logger.warning(f"Unsupported format: {glass_format}")
+        # 2. Log performance metrics
+        fps = performance.get('fps_actual', 30)
+        thermal_state = performance.get('thermal_state', 'normal')
+        battery = performance.get('battery_level', 100)
 
-        # Build response
+        logger.info(f"Glass performance: FPS={fps:.1f}, thermal={thermal_state}, battery={battery}%")
+
+        # 3. Handle negotiation request
+        negotiation_response = None
+        if 'negotiation_request' in data:
+            negotiation_response = handle_negotiation_request(
+                data['negotiation_request'],
+                performance
+            )
+
+        # 4. Auto-suggest if Glass is doing well but using light model
+        if not negotiation_response and fps > 25 and current_ml_model == 'yolov8n':
+            if current_mode != 'search_rescue':  # Don't suggest in critical modes
+                negotiation_response = {
+                    'setting': 'ml_model_complexity',
+                    'decision': 'suggested',
+                    'proposed_value': 'medium',
+                    'reason': f'Glass FPS is good ({fps:.1f}), can upgrade to medium model for better accuracy'
+                }
+                logger.info(f"Suggesting model upgrade: light → medium")
+
+        # 5. Build server-owned settings response
+        server_owned = {
+            'processing_mode': {
+                'value': current_mode,
+                'ownership': 'server',
+                'last_modified': int(time.time() * 1000)
+            },
+            'ml_model': {
+                'value': current_ml_model,
+                'ownership': 'server',
+                'last_modified': int(time.time() * 1000)
+            },
+            'detection_threshold': {
+                'value': 0.5,
+                'ownership': 'server',
+                'last_modified': int(time.time() * 1000)
+            }
+        }
+
+        # 6. Build response
         response = {
+            'sync_status': 'ok',
+            'accepted_settings': accepted_settings,
+            'server_owned_settings': server_owned,
             'server_settings': {
                 'processing_mode': current_mode,
+                'ml_model': current_ml_model,
                 'model_loaded': processor is not None,
                 'capabilities': ['object_detection', 'thermal_analysis'],
                 'max_fps': 30,
                 'compression_enabled': True,
-                'server_version': '1.0.0',
-                'format_preferred': 'MJPEG'  # Best compression/performance balance
+                'server_version': '1.0.0'
             },
-            'sync_status': 'ok' if len(mismatches) == 0 else 'mismatch',
-            'mismatches': mismatches,
             'timestamp': int(time.time() * 1000),
             'client_timestamp': client_timestamp
         }
 
+        if negotiation_response:
+            response['negotiation_response'] = negotiation_response
+
         # Send response
         emit('settings_sync_response', response)
-        logger.debug(f"Settings sync response sent ({len(mismatches)} mismatches)")
+        logger.debug(f"Settings sync complete: {len(accepted_settings)} accepted, negotiation={'yes' if negotiation_response else 'no'}")
 
     except Exception as e:
         logger.error(f"Settings sync error: {e}")
+        import traceback
+        traceback.print_exc()
         emit('settings_sync_response', {
             'sync_status': 'error',
             'error': str(e),
             'timestamp': int(time.time() * 1000)
         })
+
+def handle_negotiation_request(request, performance):
+    """Evaluate and respond to Glass negotiation request"""
+    global current_ml_model
+
+    setting = request.get('setting')
+    proposed_value = request.get('proposed_value')
+    reason = request.get('reason')
+    metrics = request.get('metrics', {})
+
+    fps = metrics.get('fps_actual', performance.get('fps_actual', 30))
+
+    logger.info(f"Negotiation request: {setting}={proposed_value}, reason={reason}")
+    logger.info(f"  Glass metrics: FPS={fps:.1f}")
+
+    if setting == 'ml_model_complexity':
+        # Glass wants lighter model
+        if proposed_value == 'light':
+            # Accept if FPS is critically low
+            if fps < 15:
+                current_ml_model = ml_model_map[proposed_value]
+                logger.info(f"✓ Accepted: Switching to {current_ml_model} (FPS critically low)")
+                return {
+                    'setting': setting,
+                    'decision': 'accepted',
+                    'new_value': proposed_value,
+                    'reason': f'Glass FPS critically low ({fps:.1f}), switching to lighter model',
+                    'expected_improvement': 'FPS should increase to 25-30'
+                }
+
+            # Reject if mission-critical mode
+            elif current_mode == 'search_rescue':
+                logger.info(f"✗ Rejected: Mission-critical mode requires accuracy")
+                return {
+                    'setting': setting,
+                    'decision': 'rejected',
+                    'reason': 'Search/rescue mode requires high accuracy model'
+                }
+
+            # Accept if performance degradation
+            elif fps < 20:
+                current_ml_model = ml_model_map[proposed_value]
+                logger.info(f"✓ Accepted: Switching to {current_ml_model} (performance degradation)")
+                return {
+                    'setting': setting,
+                    'decision': 'accepted',
+                    'new_value': proposed_value,
+                    'reason': f'Glass FPS degraded ({fps:.1f}), optimizing for performance'
+                }
+
+        # Glass wants heavier model
+        elif proposed_value == 'heavy':
+            # Accept if FPS is good
+            if fps > 28:
+                current_ml_model = ml_model_map[proposed_value]
+                logger.info(f"✓ Accepted: Upgrading to {current_ml_model}")
+                return {
+                    'setting': setting,
+                    'decision': 'accepted',
+                    'new_value': proposed_value,
+                    'reason': f'Glass FPS excellent ({fps:.1f}), can use heavier model'
+                }
+            else:
+                logger.info(f"✗ Rejected: FPS not high enough for heavy model")
+                return {
+                    'setting': setting,
+                    'decision': 'rejected',
+                    'reason': f'FPS ({fps:.1f}) insufficient for heavy model (need >28)'
+                }
+
+    return None
 
 @socketio.on('start_recording')
 def handle_start_recording(data):
