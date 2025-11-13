@@ -434,6 +434,10 @@ public class NativeUVCCamera {
         int maxFrameSize = 640 * 512 * 3 / 2;  // Max for I420
         ByteBuffer frameBuffer = ByteBuffer.allocate(maxFrameSize);
 
+        // Expected frame sizes based on negotiation
+        final int Y16_SIZE = mWidth * mHeight * 2;  // 163,840 bytes for 320×256
+        final int I420_SIZE = 640 * 512 * 3 / 2;    // 491,520 bytes
+
         int endpointType = mStreamingEndpoint.getType();
         String transferType = endpointType == UsbConstants.USB_ENDPOINT_XFER_ISOC ? "isochronous" : "bulk";
 
@@ -441,6 +445,8 @@ public class NativeUVCCamera {
         Log.i(TAG, "  Endpoint type: " + transferType);
         Log.i(TAG, "  Buffer size: " + bufferSize + " bytes");
         Log.i(TAG, "  Max frame size: " + maxFrameSize + " bytes");
+        Log.i(TAG, "  Expected Y16 size: " + Y16_SIZE + " bytes");
+        Log.i(TAG, "  Expected I420 size: " + I420_SIZE + " bytes");
         Log.i(TAG, "  Max packet size: " + mStreamingEndpoint.getMaxPacketSize() + " bytes");
 
         int frameCount = 0;
@@ -459,11 +465,6 @@ public class NativeUVCCamera {
                 );
 
                 if (bytesRead > 0) {
-                    // Log first few transfers for debugging
-                    if (frameCount < 5) {
-                        Log.d(TAG, "Transfer #" + frameCount + ": " + bytesRead + " bytes received");
-                    }
-
                     // Check for UVC payload header (first 2-12 bytes)
                     int headerLength = buffer[0] & 0xFF;
 
@@ -476,20 +477,37 @@ public class NativeUVCCamera {
                             frameBuffer.put(buffer, headerLength, payloadLength);
                         } else {
                             Log.w(TAG, "Frame buffer overflow! Remaining: " + frameBuffer.remaining() +
-                                      ", needed: " + payloadLength);
+                                      ", needed: " + payloadLength + " - discarding and starting new frame");
+                            frameBuffer.clear();
+                            frameBuffer.put(buffer, headerLength, payloadLength);
                         }
 
-                        // Check if frame is complete (end-of-frame bit in header)
-                        boolean endOfFrame = (buffer[1] & 0x02) != 0;
+                        // SIZE-BASED frame completion (more reliable than end-of-frame bit)
+                        int accumulated = frameBuffer.position();
+                        boolean frameComplete = false;
 
-                        if (endOfFrame && frameBuffer.position() > 0) {
+                        // Check if we've accumulated exactly one of the expected frame sizes
+                        if (accumulated == Y16_SIZE || accumulated == I420_SIZE) {
+                            frameComplete = true;
+                        }
+                        // Or check end-of-frame bit as fallback (but only if we're close to expected size)
+                        else if (accumulated >= (Y16_SIZE - 1024) && accumulated <= (I420_SIZE + 1024)) {
+                            boolean endOfFrame = (buffer[1] & 0x02) != 0;
+                            if (endOfFrame) {
+                                frameComplete = true;
+                            }
+                        }
+
+                        if (frameComplete && frameBuffer.position() > 0) {
                             // Frame complete - deliver to callback
                             frameBuffer.flip();
 
                             frameCount++;
-                            if (frameCount <= 3) {
-                                Log.i(TAG, "Frame #" + frameCount + " complete: " +
-                                          frameBuffer.remaining() + " bytes");
+                            if (frameCount <= 10) {
+                                Log.i(TAG, "✓ Frame #" + frameCount + " complete: " +
+                                          frameBuffer.remaining() + " bytes" +
+                                          (frameBuffer.remaining() == Y16_SIZE ? " (Y16)" :
+                                           frameBuffer.remaining() == I420_SIZE ? " (I420)" : " (unknown size)"));
                             }
 
                             if (mFrameCallback != null) {
@@ -508,9 +526,9 @@ public class NativeUVCCamera {
                             }
                         }
                     } else if (headerLength == 0) {
-                        // Some cameras send packets with no header
-                        if (frameCount < 5) {
-                            Log.w(TAG, "Received packet with zero header length");
+                        // Some cameras send packets with no header - treat as payload
+                        if (frameBuffer.remaining() >= bytesRead) {
+                            frameBuffer.put(buffer, 0, bytesRead);
                         }
                     }
                 } else if (bytesRead < 0) {
