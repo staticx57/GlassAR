@@ -92,6 +92,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private LinearLayout mAlertArea;
     private TextView mAlertText;
     private ProgressBar mProcessingIndicator;
+    private android.widget.Button mSettingsButton;
 
     // Glass touchpad gesture detection
     private GestureDetector mGestureDetector;
@@ -173,6 +174,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mAlertArea = findViewById(R.id.alert_area);
         mAlertText = findViewById(R.id.alert_text);
         mProcessingIndicator = findViewById(R.id.processing_indicator);
+        mSettingsButton = findViewById(R.id.settings_button);
+
+        // Settings button click handler (for Vysor access)
+        if (mSettingsButton != null) {
+            mSettingsButton.setOnClickListener(v -> {
+                Log.i(TAG, "Settings button clicked");
+                Intent intent = new Intent(MainActivity.this, SettingsActivity.class);
+                startActivity(intent);
+            });
+        }
 
         // Initialize Glass touchpad gesture detector
         mGestureDetector = createGestureDetector();
