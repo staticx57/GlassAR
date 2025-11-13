@@ -839,6 +839,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         } else if (!autoConnect) {
             Log.i(TAG, "Auto-connect disabled in settings");
         }
+
+        // Restart RGB camera fallback if it was active and no thermal camera
+        // This handles the case where user opens settings and returns
+        boolean rgbFallbackEnabled = prefs.getBoolean("rgb_fallback", true);
+        if (mUsingRgbFallback && !mThermalCameraActive && rgbFallbackEnabled) {
+            Log.i(TAG, "Resuming from settings - restarting RGB camera fallback");
+            // Small delay to ensure surface is ready
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (!mThermalCameraActive && mSurfaceHolder != null) {
+                    startRgbCameraFallback();
+                }
+            }, 500);
+        }
     }
     
     @Override
