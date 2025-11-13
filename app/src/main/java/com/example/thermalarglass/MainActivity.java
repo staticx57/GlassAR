@@ -1,16 +1,19 @@
 package com.example.thermalarglass;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.hardware.usb.UsbDevice;
+import android.media.MediaRecorder;
 import android.os.BatteryManager;
 import android.os.Bundle;
 import android.util.Base64;
@@ -33,10 +36,16 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 import io.socket.client.IO;
 import io.socket.client.Socket;
@@ -49,7 +58,10 @@ import io.socket.emitter.Emitter;
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
     
     private static final String TAG = "ThermalARGlass";
-    private static final String SERVER_URL = "http://192.168.1.100:8080"; // Change to your P16 IP
+    private static final String DEFAULT_SERVER_URL = "http://192.168.1.100:8080"; // Default server
+    private static final String PREF_NAME = "GlassARPrefs";
+    private static final String PREF_SERVER_URL = "server_url";
+    private static final int PERMISSION_REQUEST_CAMERA = 1;
     
     // Boson 320 specs
     private static final int BOSON_WIDTH = 320;
@@ -100,23 +112,49 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     // Colormap settings
     private String mCurrentColormap = "iron"; // Default colormap
+    private String[] mAvailableColormaps = {"iron", "rainbow", "white_hot", "arctic", "grayscale"};
+    private int mCurrentColormapIndex = 0;
 
     // Glass EE2 built-in RGB camera
     private android.hardware.Camera mRgbCamera;
     private boolean mRgbCameraEnabled = false;
     private byte[] mLatestRgbFrame = null;
 
+    // Camera mode tracking
+    private boolean mThermalCameraActive = false;
+    private boolean mUsingRgbFallback = false;
+
     // Frame counter
     private int mFrameCount = 0;
+
+    // Latest thermal frame for snapshot capture
+    private Bitmap mLatestThermalBitmap = null;
+    private ByteBuffer mLatestFrameData = null;
+
+    // Video recording (frame-based for Glass EE2)
+    private int mRecordingFrameInterval = 3; // Capture every 3rd frame (~10 fps from 30fps source)
+    private int mRecordingFrameCounter = 0;
+    private File mRecordingDir = null;
+    private int mRecordingSavedFrames = 0;
 
     // Battery monitoring
     private int mBatteryLevel = 100;
     private BroadcastReceiver mBatteryReceiver;
+
+    // Server URL configuration receiver
+    private BroadcastReceiver mServerConfigReceiver;
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Check for camera permission (required for API 23+, including Glass EE2 on API 27)
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Log.i(TAG, "Camera permission not granted, requesting permission");
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, PERMISSION_REQUEST_CAMERA);
+            // Don't return - continue initialization for UI, cameras will be started after permission granted
+        }
 
         // Initialize display
         mSurfaceView = findViewById(R.id.surface_view);
@@ -148,7 +186,47 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // Initialize battery monitoring
         initializeBatteryMonitoring();
 
+        // Initialize server URL configuration receiver
+        initializeServerConfigReceiver();
+
+        // Load settings and apply defaults
+        loadSettings();
+
+        // Start RGB camera as fallback if no thermal camera detected within 2 seconds (if enabled in settings)
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+            boolean rgbFallbackEnabled = prefs.getBoolean("rgb_fallback", true);
+
+            if (!mThermalCameraActive && rgbFallbackEnabled) {
+                Log.i(TAG, "No thermal camera detected, starting RGB fallback");
+                startRgbCameraFallback();
+            } else if (!mThermalCameraActive && !rgbFallbackEnabled) {
+                Log.i(TAG, "RGB fallback disabled in settings");
+            }
+        }, 2000);
+
         Log.i(TAG, "Thermal AR Glass initialized");
+    }
+
+    /**
+     * Load settings from SharedPreferences and apply them
+     */
+    private void loadSettings() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+
+        // Load default colormap
+        String defaultColormap = prefs.getString("default_colormap", "iron");
+        mCurrentColormap = defaultColormap;
+
+        // Find colormap index
+        for (int i = 0; i < mAvailableColormaps.length; i++) {
+            if (mAvailableColormaps[i].equals(defaultColormap)) {
+                mCurrentColormapIndex = i;
+                break;
+            }
+        }
+
+        Log.i(TAG, "Loaded settings - Colormap: " + mCurrentColormap);
     }
 
     /**
@@ -188,6 +266,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     if (e1.getY() - e2.getY() < -SWIPE_MIN_DISTANCE &&
                         Math.abs(velocityY) > SWIPE_THRESHOLD_VELOCITY) {
                         onSwipeDown();
+                        return true;
+                    }
+
+                    // Vertical swipe up - open settings
+                    if (e1.getY() - e2.getY() > SWIPE_MIN_DISTANCE &&
+                        Math.abs(velocityY) > SWIPE_THRESHOLD_VELOCITY) {
+                        onSwipeUp();
                         return true;
                     }
 
@@ -234,6 +319,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == PERMISSION_REQUEST_CAMERA) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "Camera permission granted");
+                Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show();
+
+                // Permission granted - cameras will be initialized normally in onStart()
+                // or by the RGB fallback handler
+            } else {
+                Log.w(TAG, "Camera permission denied");
+                Toast.makeText(this,
+                    "Camera permission required for thermal imaging. Please grant permission in Settings.",
+                    Toast.LENGTH_LONG).show();
+
+                // Show alert that camera permission is required
+                runOnUiThread(() -> {
+                    if (mAlertArea != null && mAlertText != null) {
+                        mAlertArea.setVisibility(View.VISIBLE);
+                        mAlertText.setText("⚠ Camera permission required\nGrant permission in Settings");
+                    }
+                });
+            }
+        }
     }
 
     // ========== Touchpad Gesture Handlers ==========
@@ -304,23 +417,25 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /**
      * Handle swipe backward gesture (toward back of Glass)
-     * Action: Navigate to previous detection
+     * Action: Cycle through thermal colormaps (only when thermal camera active)
      */
     private void onSwipeBackward() {
         Log.i(TAG, "Touchpad: Swipe backward");
 
-        if (mDetections.isEmpty()) {
-            Toast.makeText(this, "No detections to navigate", Toast.LENGTH_SHORT).show();
+        // Only cycle colormaps when thermal camera is active
+        if (!mThermalCameraActive) {
+            Toast.makeText(this, "Colormap cycling only available in thermal mode", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // Cycle backward through detections
-        mCurrentDetectionIndex--;
-        if (mCurrentDetectionIndex < 0) {
-            mCurrentDetectionIndex = mDetections.size() - 1;
-        }
+        // Cycle to next colormap
+        mCurrentColormapIndex = (mCurrentColormapIndex + 1) % mAvailableColormaps.length;
+        mCurrentColormap = mAvailableColormaps[mCurrentColormapIndex];
 
-        highlightDetection(mCurrentDetectionIndex);
+        // Update UI
+        Toast.makeText(this, "Colormap: " + mCurrentColormap, Toast.LENGTH_SHORT).show();
+        Log.i(TAG, "Switched to colormap: " + mCurrentColormap);
+
         performHapticFeedback();
     }
 
@@ -343,6 +458,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         performHapticFeedback();
     }
 
+    /**
+     * Handle swipe up gesture
+     * Action: Open settings activity
+     */
+    private void onSwipeUp() {
+        Log.i(TAG, "Touchpad: Swipe up - Opening settings");
+
+        android.content.Intent intent = new android.content.Intent(this, SettingsActivity.class);
+        startActivity(intent);
+
+        performHapticFeedback();
+    }
+
     // ========== Gesture Action Implementations ==========
 
     // Detection navigation tracking
@@ -360,46 +488,255 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             mProcessingIndicator.setVisibility(View.VISIBLE);
         }
 
-        // TODO: Implement actual snapshot capture to storage
-        // This would save the current canvas bitmap with metadata
+        // Save snapshot in background thread
+        new Thread(() -> {
+            try {
+                // Create snapshot bitmap with annotations
+                Bitmap snapshot = createSnapshotBitmap();
 
-        runOnUiThread(() -> {
-            Toast.makeText(this, "Snapshot captured", Toast.LENGTH_SHORT).show();
-            if (mProcessingIndicator != null) {
-                mProcessingIndicator.setVisibility(View.GONE);
+                if (snapshot == null) {
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, "No frame available to capture", Toast.LENGTH_SHORT).show();
+                        if (mProcessingIndicator != null) {
+                            mProcessingIndicator.setVisibility(View.GONE);
+                        }
+                    });
+                    return;
+                }
+
+                // Create Pictures/ThermalAR directory
+                File picturesDir = new File(getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "ThermalAR");
+                if (!picturesDir.exists()) {
+                    picturesDir.mkdirs();
+                }
+
+                // Generate filename with timestamp
+                SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+                String timestamp = sdf.format(new Date());
+                String filename = "thermal_" + timestamp + ".png";
+                File file = new File(picturesDir, filename);
+
+                // Save bitmap to file
+                FileOutputStream out = new FileOutputStream(file);
+                snapshot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                out.flush();
+                out.close();
+
+                Log.i(TAG, "Snapshot saved: " + file.getAbsolutePath());
+
+                // Show success message
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Snapshot saved: " + filename, Toast.LENGTH_SHORT).show();
+                    if (mProcessingIndicator != null) {
+                        mProcessingIndicator.setVisibility(View.GONE);
+                    }
+                    performHapticFeedback();
+                });
+
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to save snapshot", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Failed to save snapshot: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    if (mProcessingIndicator != null) {
+                        mProcessingIndicator.setVisibility(View.GONE);
+                    }
+                });
             }
-            performHapticFeedback();
-        });
+        }).start();
 
         // Play camera shutter sound
         playCameraShutterSound();
     }
 
     /**
+     * Creates a snapshot bitmap with thermal image and annotations
+     */
+    private Bitmap createSnapshotBitmap() {
+        if (mLatestThermalBitmap == null) {
+            return null;
+        }
+
+        // Create a new bitmap for the snapshot (Glass display size)
+        Bitmap snapshot = Bitmap.createBitmap(GLASS_WIDTH, GLASS_HEIGHT, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(snapshot);
+
+        // Draw black background
+        canvas.drawColor(Color.BLACK);
+
+        // Scale and draw thermal bitmap
+        Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
+        canvas.drawBitmap(mLatestThermalBitmap, null, destRect, null);
+
+        // Draw annotations on top
+        drawAnnotations(canvas);
+
+        return snapshot;
+    }
+
+    /**
      * Toggles video recording on/off
      */
     private void toggleRecording() {
-        mIsRecording = !mIsRecording;
-
         if (mIsRecording) {
-            Log.i(TAG, "Recording started");
-            // TODO: Start MediaRecorder for video capture
-
-            if (mRecordingIndicator != null) {
-                mRecordingIndicator.setVisibility(View.VISIBLE);
-            }
-            Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
+            stopRecording();
         } else {
-            Log.i(TAG, "Recording stopped");
-            // TODO: Stop MediaRecorder and save video
+            startRecording();
+        }
+        performHapticFeedback();
+    }
 
+    /**
+     * Starts video recording (frame sequence capture)
+     */
+    private void startRecording() {
+        Log.i(TAG, "Starting recording");
+
+        try {
+            // Create recording directory with timestamp
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+            String timestamp = sdf.format(new Date());
+            String dirName = "recording_" + timestamp;
+
+            File videosDir = new File(getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES), "ThermalAR");
+            if (!videosDir.exists()) {
+                videosDir.mkdirs();
+            }
+
+            mRecordingDir = new File(videosDir, dirName);
+            if (!mRecordingDir.exists()) {
+                mRecordingDir.mkdirs();
+            }
+
+            mRecordingFrameCounter = 0;
+            mRecordingSavedFrames = 0;
+            mIsRecording = true;
+
+            runOnUiThread(() -> {
+                if (mRecordingIndicator != null) {
+                    mRecordingIndicator.setVisibility(View.VISIBLE);
+                }
+                Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
+            });
+
+            Log.i(TAG, "Recording to: " + mRecordingDir.getAbsolutePath());
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start recording", e);
+            Toast.makeText(this, "Failed to start recording: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            mIsRecording = false;
+        }
+    }
+
+    /**
+     * Stops video recording and saves frame sequence
+     */
+    private void stopRecording() {
+        Log.i(TAG, "Stopping recording");
+        mIsRecording = false;
+
+        runOnUiThread(() -> {
             if (mRecordingIndicator != null) {
                 mRecordingIndicator.setVisibility(View.GONE);
             }
-            Toast.makeText(this, "Recording stopped", Toast.LENGTH_SHORT).show();
+        });
+
+        // Save recording info file in background
+        new Thread(() -> {
+            try {
+                if (mRecordingDir == null || mRecordingSavedFrames == 0) {
+                    runOnUiThread(() ->
+                        Toast.makeText(this, "No frames recorded", Toast.LENGTH_SHORT).show()
+                    );
+                    return;
+                }
+
+                // Create info file with recording details
+                File infoFile = new File(mRecordingDir, "recording_info.txt");
+                FileOutputStream out = new FileOutputStream(infoFile);
+                String info = String.format(Locale.US,
+                    "Recording Info\n" +
+                    "==============\n" +
+                    "Frames saved: %d\n" +
+                    "Approx duration: %.1f seconds\n" +
+                    "Frame rate: ~10 fps (every 3rd frame)\n" +
+                    "Resolution: %dx%d\n" +
+                    "\n" +
+                    "To convert to video using ffmpeg:\n" +
+                    "ffmpeg -framerate 10 -pattern_type glob -i 'frame_*.png' -c:v libx264 -pix_fmt yuv420p output.mp4\n",
+                    mRecordingSavedFrames,
+                    mRecordingSavedFrames / 10.0f,
+                    GLASS_WIDTH, GLASS_HEIGHT
+                );
+                out.write(info.getBytes());
+                out.close();
+
+                final String dirName = mRecordingDir.getName();
+                final int frameCount = mRecordingSavedFrames;
+
+                runOnUiThread(() -> {
+                    Toast.makeText(this,
+                        String.format(Locale.US, "Recording saved: %s\n%d frames (~%.1fs)",
+                            dirName, frameCount, frameCount / 10.0f),
+                        Toast.LENGTH_LONG).show();
+                });
+
+                Log.i(TAG, "Recording complete: " + mRecordingDir.getAbsolutePath() +
+                    " (" + mRecordingSavedFrames + " frames)");
+
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to save recording info", e);
+            }
+
+            mRecordingDir = null;
+            mRecordingSavedFrames = 0;
+            mRecordingFrameCounter = 0;
+
+        }).start();
+    }
+
+    /**
+     * Saves a frame during recording
+     * Called from renderThermalFrame() when recording is active
+     */
+    private void saveRecordingFrame(Bitmap frame) {
+        if (!mIsRecording || mRecordingDir == null || frame == null) {
+            return;
         }
 
-        performHapticFeedback();
+        // Only save every Nth frame to reduce storage and processing
+        mRecordingFrameCounter++;
+        if (mRecordingFrameCounter % mRecordingFrameInterval != 0) {
+            return;
+        }
+
+        // Save frame in background thread
+        final Bitmap frameCopy = frame.copy(frame.getConfig(), false);
+        new Thread(() -> {
+            try {
+                String filename = String.format(Locale.US, "frame_%06d.png", mRecordingSavedFrames);
+                File frameFile = new File(mRecordingDir, filename);
+
+                FileOutputStream out = new FileOutputStream(frameFile);
+                frameCopy.compress(Bitmap.CompressFormat.PNG, 100, out);
+                out.flush();
+                out.close();
+
+                mRecordingSavedFrames++;
+
+                // Update UI every 30 frames (~3 seconds)
+                if (mRecordingSavedFrames % 30 == 0) {
+                    runOnUiThread(() -> {
+                        Toast.makeText(this,
+                            String.format(Locale.US, "Recording: %d frames (~%.1fs)",
+                                mRecordingSavedFrames, mRecordingSavedFrames / 10.0f),
+                            Toast.LENGTH_SHORT).show();
+                    });
+                }
+
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to save recording frame", e);
+            }
+        }).start();
     }
 
     /**
@@ -461,8 +798,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onStart() {
         super.onStart();
         mUSBMonitor.register();
-        if (mSocket != null && !mSocket.connected()) {
+
+        // Respect auto-connect setting
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        boolean autoConnect = prefs.getBoolean("auto_connect", true);
+
+        if (mSocket != null && !mSocket.connected() && autoConnect) {
             mSocket.connect();
+            Log.i(TAG, "Auto-connecting to server (enabled in settings)");
+        } else if (!autoConnect) {
+            Log.i(TAG, "Auto-connect disabled in settings");
         }
     }
     
@@ -488,6 +833,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (mBatteryReceiver != null) {
             try {
                 unregisterReceiver(mBatteryReceiver);
+            } catch (IllegalArgumentException e) {
+                // Receiver not registered, ignore
+            }
+        }
+
+        // Unregister server config receiver
+        if (mServerConfigReceiver != null) {
+            try {
+                unregisterReceiver(mServerConfigReceiver);
             } catch (IllegalArgumentException e) {
                 // Receiver not registered, ignore
             }
@@ -526,6 +880,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
         registerReceiver(mBatteryReceiver, filter);
+    }
+
+    /**
+     * Initialize server URL configuration receiver
+     * Allows setting server URL via ADB or Vysor:
+     * adb shell am broadcast -a com.example.thermalarglass.SET_SERVER_URL --es url "http://YOUR_IP:8080"
+     */
+    private void initializeServerConfigReceiver() {
+        mServerConfigReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if ("com.example.thermalarglass.SET_SERVER_URL".equals(intent.getAction())) {
+                    String url = intent.getStringExtra("url");
+                    if (url != null && !url.isEmpty()) {
+                        setServerUrl(url);
+                        runOnUiThread(() ->
+                            Toast.makeText(MainActivity.this,
+                                "Server URL updated: " + url,
+                                Toast.LENGTH_LONG).show()
+                        );
+                    }
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter("com.example.thermalarglass.SET_SERVER_URL");
+        registerReceiver(mServerConfigReceiver, filter);
+        Log.i(TAG, "Server config receiver registered. Use ADB to configure: adb shell am broadcast -a com.example.thermalarglass.SET_SERVER_URL --es url \"http://YOUR_IP:8080\"");
     }
 
     /**
@@ -857,9 +1239,39 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    /**
+     * Get configured server URL from SharedPreferences
+     * Falls back to default if not configured
+     *
+     * To configure server URL via ADB:
+     * adb shell am broadcast -a com.example.thermalarglass.SET_SERVER_URL --es url "http://YOUR_IP:8080"
+     */
+    private String getServerUrl() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        String url = prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL);
+        Log.i(TAG, "Using server URL: " + url);
+        return url;
+    }
+
+    /**
+     * Set server URL and reconnect
+     */
+    private void setServerUrl(String url) {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        prefs.edit().putString(PREF_SERVER_URL, url).apply();
+        Log.i(TAG, "Server URL updated to: " + url);
+
+        // Reconnect with new URL
+        if (mSocket != null) {
+            mSocket.disconnect();
+        }
+        initializeSocket();
+    }
+
     private void initializeSocket() {
         try {
-            mSocket = IO.socket(SERVER_URL);
+            String serverUrl = getServerUrl();
+            mSocket = IO.socket(serverUrl);
             
             mSocket.on(Socket.EVENT_CONNECT, new Emitter.Listener() {
                 @Override
@@ -970,6 +1382,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             Log.i(TAG, "USB device connected, opening camera");
 
             runOnUiThread(() -> {
+                // Stop RGB fallback if running
+                if (mUsingRgbFallback) {
+                    Log.i(TAG, "Stopping RGB fallback, switching to thermal");
+                    stopRgbCamera();
+                    mUsingRgbFallback = false;
+                }
+
                 if (mCamera != null) {
                     mCamera.close();
                 }
@@ -984,8 +1403,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         mCamera.setFrameCallback(mFrameCallback);
 
                         if (mCamera.startPreview()) {
+                            mThermalCameraActive = true;
                             Log.i(TAG, "Boson 320 camera started");
-                            Toast.makeText(MainActivity.this, "Boson camera started", Toast.LENGTH_SHORT).show();
+
+                            // Dismiss USB disconnect alert if showing
+                            if (mAlertArea != null && mAlertText != null) {
+                                mAlertArea.setVisibility(View.GONE);
+                            }
+
+                            Toast.makeText(MainActivity.this, "Thermal camera connected", Toast.LENGTH_SHORT).show();
                         } else {
                             Log.e(TAG, "Failed to start preview");
                             Toast.makeText(MainActivity.this, "Failed to start camera", Toast.LENGTH_SHORT).show();
@@ -1006,11 +1432,38 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         public void onDetach(final UsbDevice device) {
             Log.i(TAG, "USB device detached");
             runOnUiThread(() -> {
+                // Stop recording if active
+                if (mIsRecording) {
+                    Log.w(TAG, "USB disconnected during recording, stopping recording");
+                    stopRecording();
+                    Toast.makeText(MainActivity.this, "Recording stopped - USB disconnected", Toast.LENGTH_LONG).show();
+                }
+
                 if (mCamera != null) {
                     mCamera.close();
                     mCamera = null;
                 }
-                Toast.makeText(MainActivity.this, "Camera disconnected", Toast.LENGTH_SHORT).show();
+                mThermalCameraActive = false;
+
+                // Show alert in alert area
+                if (mAlertArea != null && mAlertText != null) {
+                    mAlertArea.setVisibility(View.VISIBLE);
+                    mAlertText.setText("⚠ Thermal camera disconnected\nReconnect USB or using RGB fallback");
+                }
+
+                // Restart RGB camera as fallback (with delay to allow alert to show)
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+                    boolean rgbFallbackEnabled = prefs.getBoolean("rgb_fallback", true);
+
+                    if (rgbFallbackEnabled) {
+                        Log.i(TAG, "Thermal camera disconnected, starting RGB fallback");
+                        startRgbCameraFallback();
+                        Toast.makeText(MainActivity.this, "Switched to RGB camera", Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(MainActivity.this, "Thermal camera disconnected", Toast.LENGTH_LONG).show();
+                    }
+                }, 1000);
             });
         }
 
@@ -1121,6 +1574,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             // Convert thermal frame to bitmap and draw
             Bitmap thermalBitmap = convertThermalToBitmap(frameData);
             if (thermalBitmap != null) {
+                // Store latest frame for snapshot capture
+                mLatestThermalBitmap = thermalBitmap;
+
+                // Store frame data copy for snapshot
+                if (mLatestFrameData == null || mLatestFrameData.capacity() != frameData.capacity()) {
+                    mLatestFrameData = ByteBuffer.allocate(frameData.capacity());
+                }
+                frameData.rewind();
+                mLatestFrameData.clear();
+                mLatestFrameData.put(frameData);
+                frameData.rewind();
+
                 // Scale to Glass display size
                 Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
                 canvas.drawBitmap(thermalBitmap, null, destRect, null);
@@ -1128,6 +1593,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
             // Draw annotations on top
             drawAnnotations(canvas);
+
+            // Save frame if recording is active
+            if (mIsRecording && thermalBitmap != null) {
+                // Create snapshot with annotations for recording
+                Bitmap recordingFrame = createSnapshotBitmap();
+                saveRecordingFrame(recordingFrame);
+            }
 
         } finally {
             mSurfaceHolder.unlockCanvasAndPost(canvas);
@@ -1475,6 +1947,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mRgbCameraEnabled = false;
         mLatestRgbFrame = null;
         Log.i(TAG, "RGB camera stopped");
+    }
+
+    /**
+     * Start RGB camera as fallback when no thermal camera available
+     * Displays RGB preview directly on screen
+     */
+    private void startRgbCameraFallback() {
+        try {
+            // Open Glass EE2 built-in camera (usually camera 0)
+            mRgbCamera = android.hardware.Camera.open(0);
+
+            android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
+            // Set parameters for Glass EE2 camera (640x360 to match display)
+            params.setPreviewSize(640, 360);
+            mRgbCamera.setParameters(params);
+
+            // Set preview display to show on screen
+            try {
+                mRgbCamera.setPreviewDisplay(mSurfaceHolder);
+            } catch (java.io.IOException e) {
+                Log.e(TAG, "Failed to set preview display", e);
+            }
+
+            mRgbCamera.startPreview();
+            mRgbCameraEnabled = true;
+            mUsingRgbFallback = true;
+
+            // Update UI
+            runOnUiThread(() -> {
+                mModeIndicator.setText("RGB Camera");
+                mCenterTemperature.setText("--°C");
+                mFrameCounter.setText("RGB Mode");
+            });
+
+            Log.i(TAG, "RGB fallback camera started");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start RGB fallback camera", e);
+            Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_SHORT).show();
+        }
     }
     
     @Override
