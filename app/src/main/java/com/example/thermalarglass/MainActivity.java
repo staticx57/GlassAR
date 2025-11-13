@@ -1529,12 +1529,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 mFrameCounter.setText(String.valueOf(mFrameCount))
             );
 
+            // Ensure ByteBuffer is at position 0 before processing
+            frame.rewind();
+
             // Send frame to server if connected
             if (mConnected && mSocket != null) {
                 // Convert frame to byte array
                 byte[] frameData = new byte[frame.remaining()];
                 frame.get(frameData);
-                frame.rewind();  // Reset position for rendering
+                frame.rewind();  // Reset position after extraction
 
                 // Extract temperature measurements from thermal data
                 ThermalData thermalData = extractTemperatures(frameData);
