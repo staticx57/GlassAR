@@ -435,8 +435,11 @@ public class NativeUVCCamera {
         ByteBuffer frameBuffer = ByteBuffer.allocate(maxFrameSize);
 
         // Expected frame sizes based on negotiation
-        final int Y16_SIZE = mWidth * mHeight * 2;  // 163,840 bytes for 320×256
-        final int I420_SIZE = 640 * 512 * 3 / 2;    // 491,520 bytes
+        // Y16 format can include 2 telemetry rows (per FLIR Boson SDK)
+        final int Y16_SIZE = mWidth * mHeight * 2;              // 163,840 bytes for 320×256 (no telemetry)
+        final int Y16_SIZE_WITH_TELEM = mWidth * (mHeight + 2) * 2;  // 165,120 bytes for 320×258 (with telemetry)
+        final int I420_SIZE = 640 * 512 * 3 / 2;               // 491,520 bytes
+        final int I420_SIZE_WITH_TELEM = 640 * 514 * 3 / 2;    // 494,592 bytes (with telemetry)
 
         int endpointType = mStreamingEndpoint.getType();
         String transferType = endpointType == UsbConstants.USB_ENDPOINT_XFER_ISOC ? "isochronous" : "bulk";
@@ -445,8 +448,8 @@ public class NativeUVCCamera {
         Log.i(TAG, "  Endpoint type: " + transferType);
         Log.i(TAG, "  Buffer size: " + bufferSize + " bytes");
         Log.i(TAG, "  Max frame size: " + maxFrameSize + " bytes");
-        Log.i(TAG, "  Expected Y16 size: " + Y16_SIZE + " bytes");
-        Log.i(TAG, "  Expected I420 size: " + I420_SIZE + " bytes");
+        Log.i(TAG, "  Expected Y16 sizes: " + Y16_SIZE + " (no telem) or " + Y16_SIZE_WITH_TELEM + " (with telem) bytes");
+        Log.i(TAG, "  Expected I420 sizes: " + I420_SIZE + " (no telem) or " + I420_SIZE_WITH_TELEM + " (with telem) bytes");
         Log.i(TAG, "  Max packet size: " + mStreamingEndpoint.getMaxPacketSize() + " bytes");
 
         int frameCount = 0;
@@ -489,21 +492,29 @@ public class NativeUVCCamera {
 
                         // Diagnostic: Log when we're close to target size
                         if (frameCount < 5 && accumulated > 160000) {
-                            Log.d(TAG, "Frame accumulation: " + accumulated + " bytes, EOF bit=" + endOfFrame +
-                                      ", need " + Y16_SIZE + " for Y16 or " + I420_SIZE + " for I420");
+                            Log.d(TAG, "Frame accumulation: " + accumulated + " bytes, EOF bit=" + endOfFrame);
+                            Log.d(TAG, "  Valid sizes: Y16=" + Y16_SIZE + ", Y16+telem=" + Y16_SIZE_WITH_TELEM +
+                                      ", I420=" + I420_SIZE + ", I420+telem=" + I420_SIZE_WITH_TELEM);
                         }
 
-                        // ONLY accept exact frame sizes - no fallback
+                        // Accept exact frame sizes (with or without telemetry)
                         if (accumulated == Y16_SIZE) {
                             frameComplete = true;
-                            if (frameCount < 5) Log.i(TAG, "✓ Exact Y16 frame size matched!");
+                            if (frameCount < 5) Log.i(TAG, "✓ Y16 frame (320×256, no telemetry)");
+                        } else if (accumulated == Y16_SIZE_WITH_TELEM) {
+                            frameComplete = true;
+                            if (frameCount < 5) Log.i(TAG, "✓ Y16 frame (320×258, WITH 2 telemetry rows)");
                         } else if (accumulated == I420_SIZE) {
                             frameComplete = true;
-                            if (frameCount < 5) Log.i(TAG, "✓ Exact I420 frame size matched!");
+                            if (frameCount < 5) Log.i(TAG, "✓ I420 frame (640×512, no telemetry)");
+                        } else if (accumulated == I420_SIZE_WITH_TELEM) {
+                            frameComplete = true;
+                            if (frameCount < 5) Log.i(TAG, "✓ I420 frame (640×514, WITH 2 telemetry rows)");
                         }
-                        // If accumulated exceeds expected size, frame is corrupted - restart
-                        else if (accumulated > I420_SIZE) {
-                            Log.w(TAG, "Frame buffer overflow: " + accumulated + " bytes exceeds maximum " + I420_SIZE + " - restarting frame");
+                        // If accumulated exceeds maximum possible size, frame is corrupted - restart
+                        else if (accumulated > I420_SIZE_WITH_TELEM) {
+                            Log.w(TAG, "Frame buffer overflow: " + accumulated + " bytes exceeds maximum " +
+                                      I420_SIZE_WITH_TELEM + " - restarting frame");
                             frameBuffer.clear();
                         }
 
@@ -513,10 +524,14 @@ public class NativeUVCCamera {
 
                             frameCount++;
                             if (frameCount <= 10) {
-                                Log.i(TAG, "✓ Frame #" + frameCount + " complete: " +
-                                          frameBuffer.remaining() + " bytes" +
-                                          (frameBuffer.remaining() == Y16_SIZE ? " (Y16)" :
-                                           frameBuffer.remaining() == I420_SIZE ? " (I420)" : " (unknown size)"));
+                                String format = " (unknown size)";
+                                int size = frameBuffer.remaining();
+                                if (size == Y16_SIZE) format = " (Y16, 320×256)";
+                                else if (size == Y16_SIZE_WITH_TELEM) format = " (Y16+telem, 320×258)";
+                                else if (size == I420_SIZE) format = " (I420, 640×512)";
+                                else if (size == I420_SIZE_WITH_TELEM) format = " (I420+telem, 640×514)";
+
+                                Log.i(TAG, "✓ Frame #" + frameCount + " delivered: " + size + " bytes" + format);
                             }
 
                             if (mFrameCallback != null) {
