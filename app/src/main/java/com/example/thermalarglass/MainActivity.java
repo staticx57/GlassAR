@@ -118,6 +118,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private Socket mSocket;
     private boolean mConnected = false;
 
+    // Smart Features
+    private ServerDiscovery mServerDiscovery;
+    private SmartDisplayManager mSmartDisplay;
+
     // Display modes
     public static final String MODE_THERMAL_ONLY = "thermal_only";
     public static final String MODE_THERMAL_RGB_FUSION = "thermal_rgb_fusion";
@@ -210,6 +214,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         // Initialize network connection
         initializeSocket();
+
+        // Initialize smart features
+        initializeSmartFeatures();
 
         // Initialize battery monitoring
         initializeBatteryMonitoring();
@@ -516,6 +523,52 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         startActivity(intent);
 
         performHapticFeedback();
+    }
+
+    /**
+     * Cycle through smart display modes
+     * Can be called from gestures or settings
+     */
+    private void cycleDisplayMode() {
+        if (mSmartDisplay == null) {
+            return;
+        }
+
+        SmartDisplayManager.DisplayMode[] modes = SmartDisplayManager.DisplayMode.values();
+        SmartDisplayManager.DisplayMode currentMode = mSmartDisplay.getDisplayMode();
+
+        // Find current mode index
+        int currentIndex = 0;
+        for (int i = 0; i < modes.length; i++) {
+            if (modes[i] == currentMode) {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        // Cycle to next mode
+        int nextIndex = (currentIndex + 1) % modes.length;
+        SmartDisplayManager.DisplayMode nextMode = modes[nextIndex];
+
+        mSmartDisplay.setDisplayMode(nextMode);
+
+        String modeName;
+        switch (nextMode) {
+            case MINIMAL:
+                modeName = "Minimal (dots only)";
+                break;
+            case STANDARD:
+                modeName = "Standard (boxes + labels)";
+                break;
+            case DETAILED:
+                modeName = "Detailed (full info + stats)";
+                break;
+            default:
+                modeName = nextMode.toString();
+        }
+
+        Toast.makeText(this, "Display: " + modeName, Toast.LENGTH_SHORT).show();
+        Log.i(TAG, "Display mode changed to: " + nextMode);
     }
 
     // ========== Gesture Action Implementations ==========
@@ -1515,7 +1568,79 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             Log.e(TAG, "Socket initialization error", e);
         }
     }
-    
+
+    /**
+     * Initialize smart features: server discovery and smart display
+     */
+    private void initializeSmartFeatures() {
+        Log.i(TAG, "Initializing smart features...");
+
+        // Initialize smart display manager
+        mSmartDisplay = new SmartDisplayManager();
+        mSmartDisplay.setDisplayMode(SmartDisplayManager.DisplayMode.STANDARD);
+        Log.i(TAG, "✓ Smart display initialized (mode: STANDARD)");
+
+        // Initialize server discovery
+        mServerDiscovery = new ServerDiscovery(this);
+
+        // Try automatic server discovery
+        startAutomaticServerDiscovery();
+    }
+
+    /**
+     * Start automatic server discovery
+     */
+    private void startAutomaticServerDiscovery() {
+        Log.i(TAG, "Starting automatic server discovery...");
+
+        mServerDiscovery.startDiscovery(new ServerDiscovery.IDiscoveryCallback() {
+            @Override
+            public void onServerFound(ServerDiscovery.ServerInfo server) {
+                Log.i(TAG, "✓ Server discovered: " + server.name + " at " + server.getUrl());
+
+                runOnUiThread(() -> {
+                    Toast.makeText(MainActivity.this,
+                        "Found server: " + server.name,
+                        Toast.LENGTH_SHORT).show();
+
+                    // Save discovered server URL
+                    android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+                    prefs.edit().putString(PREF_SERVER_URL, server.getUrl()).apply();
+                    Log.i(TAG, "Saved server URL: " + server.getUrl());
+
+                    // Reconnect to discovered server
+                    if (mSocket != null) {
+                        mSocket.disconnect();
+                    }
+                    initializeSocket();
+                    if (mSocket != null) {
+                        mSocket.connect();
+                    }
+                });
+            }
+
+            @Override
+            public void onDiscoveryComplete(List<ServerDiscovery.ServerInfo> servers) {
+                if (servers.isEmpty()) {
+                    Log.i(TAG, "No servers found via auto-discovery, using saved/default URL");
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this,
+                            "No servers found - using saved URL",
+                            Toast.LENGTH_SHORT).show();
+                    });
+                } else {
+                    Log.i(TAG, "Discovery complete: found " + servers.size() + " server(s)");
+                }
+            }
+
+            @Override
+            public void onDiscoveryFailed(String error) {
+                Log.w(TAG, "Server discovery failed: " + error);
+                // Silently fall back to saved URL - no need to alarm user
+            }
+        });
+    }
+
     private final NativeUSBMonitor.OnDeviceConnectListener mOnDeviceConnectListener = new NativeUSBMonitor.OnDeviceConnectListener() {
         @Override
         public void onAttach(final UsbDevice device) {
@@ -2183,105 +2308,58 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
     
     private void drawAnnotations(Canvas canvas) {
-        Paint boxPaint = new Paint();
-        boxPaint.setStyle(Paint.Style.STROKE);
-        boxPaint.setStrokeWidth(3);
-        
+        // Use smart display manager for intelligent object rendering
+        if (mSmartDisplay != null && (!mDetections.isEmpty() || mThermalAnalysis != null)) {
+            // Convert detections and thermal anomalies to AnnotatedObject list
+            List<SmartDisplayManager.AnnotatedObject> objects = new ArrayList<>();
+
+            // Add object detections
+            for (Detection det : mDetections) {
+                SmartDisplayManager.AnnotatedObject obj =
+                    new SmartDisplayManager.AnnotatedObject(det.bbox, det.confidence, det.className);
+                objects.add(obj);
+            }
+
+            // Add thermal anomalies (hot spots)
+            if (mThermalAnalysis != null) {
+                for (ThermalAnomaly anomaly : mThermalAnalysis.hotSpots) {
+                    SmartDisplayManager.AnnotatedObject obj =
+                        new SmartDisplayManager.AnnotatedObject(
+                            anomaly.bbox, 1.0f, "Hot Spot");
+                    obj.temperature = anomaly.temperature;
+                    obj.isThermalAnomaly = true;
+                    objects.add(obj);
+                }
+
+                // Add cold spots
+                for (ThermalAnomaly anomaly : mThermalAnalysis.coldSpots) {
+                    SmartDisplayManager.AnnotatedObject obj =
+                        new SmartDisplayManager.AnnotatedObject(
+                            anomaly.bbox, 1.0f, "Cold Spot");
+                    obj.temperature = anomaly.temperature;
+                    obj.isThermalAnomaly = true;
+                    objects.add(obj);
+                }
+            }
+
+            // Let smart display manager handle rendering
+            float scaleX = (float) GLASS_WIDTH / BOSON_WIDTH;
+            float scaleY = (float) GLASS_HEIGHT / BOSON_HEIGHT;
+
+            mSmartDisplay.drawAnnotations(canvas, objects, scaleX, scaleY);
+        }
+
+        // Draw status info (keep original HUD)
         Paint textPaint = new Paint();
-        textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(24);
         textPaint.setAntiAlias(true);
-        
-        // Scale factor from Boson to Glass display
-        float scaleX = (float) GLASS_WIDTH / BOSON_WIDTH;
-        float scaleY = (float) GLASS_HEIGHT / BOSON_HEIGHT;
-        
-        // Draw object detections
-        for (int i = 0; i < mDetections.size(); i++) {
-            Detection det = mDetections.get(i);
-            boolean isHighlighted = (i == mCurrentDetectionIndex);
-            // Scale bounding box
-            Rect scaledBox = new Rect(
-                (int) (det.bbox[0] * scaleX),
-                (int) (det.bbox[1] * scaleY),
-                (int) (det.bbox[2] * scaleX),
-                (int) (det.bbox[3] * scaleY)
-            );
-            
-            // Choose color based on confidence and highlight state
-            if (isHighlighted) {
-                // Highlighted detection has thicker border and cyan color
-                boxPaint.setStrokeWidth(6);
-                boxPaint.setColor(Color.CYAN);
-            } else if (det.confidence > 0.8) {
-                boxPaint.setStrokeWidth(3);
-                boxPaint.setColor(Color.GREEN);
-            } else if (det.confidence > 0.5) {
-                boxPaint.setStrokeWidth(3);
-                boxPaint.setColor(Color.YELLOW);
-            } else {
-                boxPaint.setStrokeWidth(3);
-                boxPaint.setColor(Color.GRAY);
-            }
+        textPaint.setTextSize(20);
+        textPaint.setColor(mConnected ? Color.GREEN : Color.RED);
 
-            canvas.drawRect(scaledBox, boxPaint);
-            
-            // Draw label with highlight indicator
-            String label = isHighlighted ?
-                String.format(">>> %s %.2f <<<", det.className, det.confidence) :
-                String.format("%s %.2f", det.className, det.confidence);
-
-            if (isHighlighted) {
-                textPaint.setTextSize(28);
-                textPaint.setColor(Color.CYAN);
-            } else {
-                textPaint.setTextSize(24);
-                textPaint.setColor(Color.WHITE);
-            }
-
-            canvas.drawText(label, scaledBox.left, scaledBox.top - 5, textPaint);
-        }
-        
-        // Draw thermal anomalies
-        if (mThermalAnalysis != null) {
-            boxPaint.setStrokeWidth(4);
-            
-            // Hot spots in red
-            boxPaint.setColor(Color.RED);
-            for (ThermalAnomaly anomaly : mThermalAnalysis.hotSpots) {
-                Rect scaledBox = new Rect(
-                    (int) (anomaly.bbox[0] * scaleX),
-                    (int) (anomaly.bbox[1] * scaleY),
-                    (int) (anomaly.bbox[2] * scaleX),
-                    (int) (anomaly.bbox[3] * scaleY)
-                );
-                canvas.drawRect(scaledBox, boxPaint);
-                
-                String tempLabel = String.format("%.1f°C", anomaly.temperature);
-                canvas.drawText(tempLabel, scaledBox.left, scaledBox.bottom + 20, textPaint);
-            }
-            
-            // Cold spots in blue
-            boxPaint.setColor(Color.CYAN);
-            for (ThermalAnomaly anomaly : mThermalAnalysis.coldSpots) {
-                Rect scaledBox = new Rect(
-                    (int) (anomaly.bbox[0] * scaleX),
-                    (int) (anomaly.bbox[1] * scaleY),
-                    (int) (anomaly.bbox[2] * scaleX),
-                    (int) (anomaly.bbox[3] * scaleY)
-                );
-                canvas.drawRect(scaledBox, boxPaint);
-                
-                String tempLabel = String.format("%.1f°C", anomaly.temperature);
-                canvas.drawText(tempLabel, scaledBox.left, scaledBox.bottom + 20, textPaint);
-            }
-        }
-        
-        // Draw status info
-        textPaint.setColor(Color.GREEN);
         canvas.drawText(mConnected ? "Connected" : "Disconnected", 10, 30, textPaint);
-        canvas.drawText(String.format("Mode: %s", mCurrentMode), 10, 60, textPaint);
-        canvas.drawText(String.format("Frame: %d", mFrameCount), 10, 90, textPaint);
+
+        textPaint.setColor(Color.WHITE);
+        canvas.drawText(String.format("Mode: %s", mCurrentMode), 10, 55, textPaint);
+        canvas.drawText(String.format("Frame: %d", mFrameCount), 10, 80, textPaint);
     }
     
     // Mode switching methods

@@ -145,6 +145,13 @@ public class SmartDisplayManager {
     }
 
     /**
+     * Get current display mode
+     */
+    public DisplayMode getDisplayMode() {
+        return mDisplayMode;
+    }
+
+    /**
      * Draw annotations intelligently on Glass display
      */
     public void drawAnnotations(Canvas canvas, List<AnnotatedObject> objects, float scaleX, float scaleY) {
