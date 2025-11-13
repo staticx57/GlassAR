@@ -10,6 +10,8 @@ import torch
 import json
 import base64
 import os
+import socket
+import threading
 from collections import deque
 from pathlib import Path
 from flask import Flask, render_template, jsonify
@@ -27,6 +29,53 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# ========== AUTOMATIC SERVER DISCOVERY ==========
+
+DISCOVERY_PORT = 8081
+SERVER_PORT = 8080  # Main Socket.IO port
+SERVER_NAME = "ThermalAR-Server"
+
+def start_discovery_service():
+    """
+    UDP broadcast responder for automatic Glass discovery
+    Responds to 'THERMAL_AR_GLASS_DISCOVERY' broadcasts
+    """
+    def discovery_responder():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        try:
+            sock.bind(('', DISCOVERY_PORT))
+            logger.info(f"✓ Discovery service listening on port {DISCOVERY_PORT}")
+            logger.info(f"  Glass devices will auto-discover this server")
+
+            while True:
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    message = data.decode('utf-8')
+
+                    if message == "THERMAL_AR_GLASS_DISCOVERY":
+                        # Respond with server info
+                        # Format: THERMAL_AR_SERVER:name:port:capabilities
+                        response = f"THERMAL_AR_SERVER:{SERVER_NAME}:{SERVER_PORT}:object_detection,thermal_analysis"
+                        sock.sendto(response.encode('utf-8'), addr)
+                        logger.info(f"Responded to discovery from {addr[0]}")
+
+                except Exception as e:
+                    logger.error(f"Discovery response error: {e}")
+
+        except Exception as e:
+            logger.error(f"Discovery service failed to start: {e}")
+        finally:
+            sock.close()
+
+    # Start discovery responder in background thread
+    discovery_thread = threading.Thread(target=discovery_responder, daemon=True)
+    discovery_thread.start()
+
+# Start discovery service
+start_discovery_service()
 
 class Boson320Processor:
     """Main processor for Boson 320 60Hz thermal stream"""
