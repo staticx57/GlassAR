@@ -49,7 +49,9 @@ import io.socket.emitter.Emitter;
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
     
     private static final String TAG = "ThermalARGlass";
-    private static final String SERVER_URL = "http://192.168.1.100:8080"; // Change to your P16 IP
+    private static final String DEFAULT_SERVER_URL = "http://192.168.1.100:8080"; // Default server
+    private static final String PREF_NAME = "GlassARPrefs";
+    private static final String PREF_SERVER_URL = "server_url";
     
     // Boson 320 specs
     private static final int BOSON_WIDTH = 320;
@@ -100,11 +102,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     // Colormap settings
     private String mCurrentColormap = "iron"; // Default colormap
+    private String[] mAvailableColormaps = {"iron", "rainbow", "white_hot", "arctic", "grayscale"};
+    private int mCurrentColormapIndex = 0;
 
     // Glass EE2 built-in RGB camera
     private android.hardware.Camera mRgbCamera;
     private boolean mRgbCameraEnabled = false;
     private byte[] mLatestRgbFrame = null;
+
+    // Camera mode tracking
+    private boolean mThermalCameraActive = false;
+    private boolean mUsingRgbFallback = false;
 
     // Frame counter
     private int mFrameCount = 0;
@@ -112,6 +120,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Battery monitoring
     private int mBatteryLevel = 100;
     private BroadcastReceiver mBatteryReceiver;
+
+    // Server URL configuration receiver
+    private BroadcastReceiver mServerConfigReceiver;
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -147,6 +158,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         // Initialize battery monitoring
         initializeBatteryMonitoring();
+
+        // Initialize server URL configuration receiver
+        initializeServerConfigReceiver();
+
+        // Start RGB camera as fallback if no thermal camera detected within 2 seconds
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (!mThermalCameraActive) {
+                Log.i(TAG, "No thermal camera detected, starting RGB fallback");
+                startRgbCameraFallback();
+            }
+        }, 2000);
 
         Log.i(TAG, "Thermal AR Glass initialized");
     }
@@ -304,23 +326,25 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /**
      * Handle swipe backward gesture (toward back of Glass)
-     * Action: Navigate to previous detection
+     * Action: Cycle through thermal colormaps (only when thermal camera active)
      */
     private void onSwipeBackward() {
         Log.i(TAG, "Touchpad: Swipe backward");
 
-        if (mDetections.isEmpty()) {
-            Toast.makeText(this, "No detections to navigate", Toast.LENGTH_SHORT).show();
+        // Only cycle colormaps when thermal camera is active
+        if (!mThermalCameraActive) {
+            Toast.makeText(this, "Colormap cycling only available in thermal mode", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // Cycle backward through detections
-        mCurrentDetectionIndex--;
-        if (mCurrentDetectionIndex < 0) {
-            mCurrentDetectionIndex = mDetections.size() - 1;
-        }
+        // Cycle to next colormap
+        mCurrentColormapIndex = (mCurrentColormapIndex + 1) % mAvailableColormaps.length;
+        mCurrentColormap = mAvailableColormaps[mCurrentColormapIndex];
 
-        highlightDetection(mCurrentDetectionIndex);
+        // Update UI
+        Toast.makeText(this, "Colormap: " + mCurrentColormap, Toast.LENGTH_SHORT).show();
+        Log.i(TAG, "Switched to colormap: " + mCurrentColormap);
+
         performHapticFeedback();
     }
 
@@ -493,6 +517,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
         }
 
+        // Unregister server config receiver
+        if (mServerConfigReceiver != null) {
+            try {
+                unregisterReceiver(mServerConfigReceiver);
+            } catch (IllegalArgumentException e) {
+                // Receiver not registered, ignore
+            }
+        }
+
         super.onStop();
     }
 
@@ -526,6 +559,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
         registerReceiver(mBatteryReceiver, filter);
+    }
+
+    /**
+     * Initialize server URL configuration receiver
+     * Allows setting server URL via ADB or Vysor:
+     * adb shell am broadcast -a com.example.thermalarglass.SET_SERVER_URL --es url "http://YOUR_IP:8080"
+     */
+    private void initializeServerConfigReceiver() {
+        mServerConfigReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if ("com.example.thermalarglass.SET_SERVER_URL".equals(intent.getAction())) {
+                    String url = intent.getStringExtra("url");
+                    if (url != null && !url.isEmpty()) {
+                        setServerUrl(url);
+                        runOnUiThread(() ->
+                            Toast.makeText(MainActivity.this,
+                                "Server URL updated: " + url,
+                                Toast.LENGTH_LONG).show()
+                        );
+                    }
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter("com.example.thermalarglass.SET_SERVER_URL");
+        registerReceiver(mServerConfigReceiver, filter);
+        Log.i(TAG, "Server config receiver registered. Use ADB to configure: adb shell am broadcast -a com.example.thermalarglass.SET_SERVER_URL --es url \"http://YOUR_IP:8080\"");
     }
 
     /**
@@ -857,9 +918,39 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    /**
+     * Get configured server URL from SharedPreferences
+     * Falls back to default if not configured
+     *
+     * To configure server URL via ADB:
+     * adb shell am broadcast -a com.example.thermalarglass.SET_SERVER_URL --es url "http://YOUR_IP:8080"
+     */
+    private String getServerUrl() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        String url = prefs.getString(PREF_SERVER_URL, DEFAULT_SERVER_URL);
+        Log.i(TAG, "Using server URL: " + url);
+        return url;
+    }
+
+    /**
+     * Set server URL and reconnect
+     */
+    private void setServerUrl(String url) {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        prefs.edit().putString(PREF_SERVER_URL, url).apply();
+        Log.i(TAG, "Server URL updated to: " + url);
+
+        // Reconnect with new URL
+        if (mSocket != null) {
+            mSocket.disconnect();
+        }
+        initializeSocket();
+    }
+
     private void initializeSocket() {
         try {
-            mSocket = IO.socket(SERVER_URL);
+            String serverUrl = getServerUrl();
+            mSocket = IO.socket(serverUrl);
             
             mSocket.on(Socket.EVENT_CONNECT, new Emitter.Listener() {
                 @Override
@@ -970,6 +1061,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             Log.i(TAG, "USB device connected, opening camera");
 
             runOnUiThread(() -> {
+                // Stop RGB fallback if running
+                if (mUsingRgbFallback) {
+                    Log.i(TAG, "Stopping RGB fallback, switching to thermal");
+                    stopRgbCamera();
+                    mUsingRgbFallback = false;
+                }
+
                 if (mCamera != null) {
                     mCamera.close();
                 }
@@ -984,8 +1082,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         mCamera.setFrameCallback(mFrameCallback);
 
                         if (mCamera.startPreview()) {
+                            mThermalCameraActive = true;
                             Log.i(TAG, "Boson 320 camera started");
-                            Toast.makeText(MainActivity.this, "Boson camera started", Toast.LENGTH_SHORT).show();
+                            Toast.makeText(MainActivity.this, "Thermal camera active", Toast.LENGTH_SHORT).show();
                         } else {
                             Log.e(TAG, "Failed to start preview");
                             Toast.makeText(MainActivity.this, "Failed to start camera", Toast.LENGTH_SHORT).show();
@@ -1010,7 +1109,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     mCamera.close();
                     mCamera = null;
                 }
-                Toast.makeText(MainActivity.this, "Camera disconnected", Toast.LENGTH_SHORT).show();
+                mThermalCameraActive = false;
+
+                // Restart RGB camera as fallback
+                Log.i(TAG, "Thermal camera disconnected, starting RGB fallback");
+                startRgbCameraFallback();
+
+                Toast.makeText(MainActivity.this, "Switched to RGB camera", Toast.LENGTH_SHORT).show();
             });
         }
 
@@ -1475,6 +1580,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mRgbCameraEnabled = false;
         mLatestRgbFrame = null;
         Log.i(TAG, "RGB camera stopped");
+    }
+
+    /**
+     * Start RGB camera as fallback when no thermal camera available
+     * Displays RGB preview directly on screen
+     */
+    private void startRgbCameraFallback() {
+        try {
+            // Open Glass EE2 built-in camera (usually camera 0)
+            mRgbCamera = android.hardware.Camera.open(0);
+
+            android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
+            // Set parameters for Glass EE2 camera (640x360 to match display)
+            params.setPreviewSize(640, 360);
+            mRgbCamera.setParameters(params);
+
+            // Set preview display to show on screen
+            try {
+                mRgbCamera.setPreviewDisplay(mSurfaceHolder);
+            } catch (java.io.IOException e) {
+                Log.e(TAG, "Failed to set preview display", e);
+            }
+
+            mRgbCamera.startPreview();
+            mRgbCameraEnabled = true;
+            mUsingRgbFallback = true;
+
+            // Update UI
+            runOnUiThread(() -> {
+                mModeIndicator.setText("RGB Camera");
+                mCenterTemperature.setText("--°C");
+                mFrameCounter.setText("RGB Mode");
+            });
+
+            Log.i(TAG, "RGB fallback camera started");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start RGB fallback camera", e);
+            Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_SHORT).show();
+        }
     }
     
     @Override
