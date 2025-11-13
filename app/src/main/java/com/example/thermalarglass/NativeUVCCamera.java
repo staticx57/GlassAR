@@ -489,7 +489,7 @@ public class NativeUVCCamera {
 
                     if (headerLength > 0 && headerLength < bytesRead) {
                         // Log header details for first few packets (debugging)
-                        if (frameCount == 0 && accumulated < 1000) {
+                        if (frameCount == 0 && frameBuffer.position() < 1000) {
                             int bitField = buffer[1] & 0xFF;
                             boolean eof = (bitField & 0x02) != 0;
                             boolean error = (bitField & 0x40) != 0;
@@ -634,7 +634,7 @@ public class NativeUVCCamera {
                             frameStartTime = System.currentTimeMillis();  // Reset timeout for next frame
 
                             // Periodic status logging (every 5 seconds)
-                            long now = System.currentTimeMillis();
+                            now = System.currentTimeMillis();
                             if (now - lastLogTime > 5000) {
                                 Log.i(TAG, "Streaming status: " + frameCount + " frames received, " +
                                           errorCount + " errors");

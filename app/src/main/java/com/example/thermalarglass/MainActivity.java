@@ -1946,6 +1946,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    private void updateModeIndicator() {
+        if (mModeIndicator != null) {
+            mModeIndicator.setText("Mode: " + mCurrentMode);
+        }
+    }
+
     /**
      * Start settings sync when connected
      */
