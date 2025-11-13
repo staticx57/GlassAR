@@ -58,6 +58,26 @@
             android:textColor="#FFFFFF"
             android:textSize="12sp"
             android:paddingStart="8dp" />
+
+        <!-- Battery indicator -->
+        <TextView
+            android:id="@+id/battery_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🔋 100%"
+            android:textColor="#00FF00"
+            android:textSize="12sp"
+            android:paddingStart="8dp" />
+
+        <!-- Network indicator -->
+        <TextView
+            android:id="@+id/network_indicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📶"
+            android:textColor="#00FF00"
+            android:textSize="12sp"
+            android:paddingStart="8dp" />
     </LinearLayout>
 
     <!-- Center crosshair/reticle -->

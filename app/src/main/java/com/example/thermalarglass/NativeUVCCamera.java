@@ -238,7 +238,7 @@ public class NativeUVCCamera {
 
             // Send SET_CUR(PROBE) request
             int result = mConnection.controlTransfer(
-                UsbConstants.USB_DIR_OUT | UsbConstants.USB_TYPE_CLASS | UsbConstants.USB_INTERFACE_SUBCLASS,
+                UsbConstants.USB_DIR_OUT | UsbConstants.USB_TYPE_CLASS | UsbConstants.USB_RECIP_INTERFACE,
                 UVC_SET_CUR,
                 VS_PROBE_CONTROL << 8,
                 mVideoStreamingInterface.getId(),
@@ -254,7 +254,7 @@ public class NativeUVCCamera {
 
             // Send SET_CUR(COMMIT) request
             result = mConnection.controlTransfer(
-                UsbConstants.USB_DIR_OUT | UsbConstants.USB_TYPE_CLASS | UsbConstants.USB_INTERFACE_SUBCLASS,
+                UsbConstants.USB_DIR_OUT | UsbConstants.USB_TYPE_CLASS | UsbConstants.USB_RECIP_INTERFACE,
                 UVC_SET_CUR,
                 VS_COMMIT_CONTROL << 8,
                 mVideoStreamingInterface.getId(),

@@ -210,7 +210,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
             @Override
             public boolean onDoubleTap(MotionEvent e) {
-                onDoubleTap();
+                onDoubleTapGesture();
                 return true;
             }
         });
@@ -265,7 +265,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      * Handle touchpad double-tap gesture
      * Action: Take snapshot
      */
-    private void onDoubleTap() {
+    private void onDoubleTapGesture() {
         Log.i(TAG, "Touchpad: Double tap");
         captureSnapshot();
     }
