@@ -67,7 +67,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private static final int BOSON_WIDTH = 320;
     private static final int BOSON_HEIGHT = 256;
     private static final int TARGET_FPS = 60;
-    
+
+    // Boson format specifications
+    private static final int Y16_FRAME_SIZE = 320 * 256 * 2;      // 163,840 bytes (16-bit grayscale)
+    private static final int I420_FRAME_SIZE = 640 * 512 * 3 / 2; // 491,520 bytes (YUV420 planar)
+    private static final int I420_WIDTH = 640;
+    private static final int I420_HEIGHT = 512;
+
+    // Format detection
+    private enum BosonFormat {
+        Y16,    // 16-bit radiometric (320×256)
+        I420    // 8-bit colorized YUV420 (640×512)
+    }
+    private BosonFormat mDetectedFormat = null;
+
     // Glass display
     private static final int GLASS_WIDTH = 640;
     private static final int GLASS_HEIGHT = 360;
@@ -1654,39 +1667,64 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private Bitmap convertThermalToBitmap(ByteBuffer frameData) {
         try {
-            // Boson 320 outputs Y16 format: 320x256x2 = 163,840 bytes
-            // Y16 format: 16-bit grayscale per pixel (Little Endian: LOW_BYTE, HIGH_BYTE)
-            final int EXPECTED_FRAME_SIZE = BOSON_WIDTH * BOSON_HEIGHT * 2;
-
-            // Validate frame size before processing
+            // Validate frame data
             if (frameData == null) {
                 Log.w(TAG, "Null frame data");
                 return null;
             }
 
             int available = frameData.remaining();
-            if (available < EXPECTED_FRAME_SIZE) {
-                Log.w(TAG, "Incomplete frame: expected " + EXPECTED_FRAME_SIZE +
-                           " bytes, got " + available);
+
+            // Auto-detect format on first frame
+            if (mDetectedFormat == null) {
+                if (available == Y16_FRAME_SIZE) {
+                    mDetectedFormat = BosonFormat.Y16;
+                    Log.i(TAG, "Detected Y16 format: 320×256, 16-bit radiometric");
+                } else if (available == I420_FRAME_SIZE) {
+                    mDetectedFormat = BosonFormat.I420;
+                    Log.i(TAG, "Detected I420 format: 640×512, YUV420 colorized");
+                } else {
+                    Log.w(TAG, "Unknown frame size: " + available + " bytes (expected " + Y16_FRAME_SIZE + " or " + I420_FRAME_SIZE + ")");
+                    return null;
+                }
+            }
+
+            // Process based on detected format
+            if (mDetectedFormat == BosonFormat.Y16) {
+                return convertY16ToBitmap(frameData, available);
+            } else if (mDetectedFormat == BosonFormat.I420) {
+                return convertI420ToBitmap(frameData, available);
+            }
+
+            return null;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error converting thermal frame", e);
+            return null;
+        }
+    }
+
+    /**
+     * Convert Y16 format (16-bit radiometric) to bitmap
+     * Format: 320×256, 2 bytes per pixel (Little Endian)
+     */
+    private Bitmap convertY16ToBitmap(ByteBuffer frameData, int available) {
+        try {
+            if (available < Y16_FRAME_SIZE) {
+                Log.w(TAG, "Incomplete Y16 frame: expected " + Y16_FRAME_SIZE + " bytes, got " + available);
                 return null;
             }
 
-            // Make a defensive copy to prevent corruption if USB layer reuses buffer
-            // This prevents flickering caused by the buffer being overwritten mid-render
+            // Make defensive copy
             frameData.rewind();
-            byte[] frameCopy = new byte[EXPECTED_FRAME_SIZE];
+            byte[] frameCopy = new byte[Y16_FRAME_SIZE];
             frameData.get(frameCopy);
 
-            // Create bitmap
+            // Create bitmap (320×256)
             Bitmap bitmap = Bitmap.createBitmap(BOSON_WIDTH, BOSON_HEIGHT, Bitmap.Config.ARGB_8888);
-
-            // Convert to pixel array
             int[] pixels = new int[BOSON_WIDTH * BOSON_HEIGHT];
 
             // Extract 16-bit values from Y16 format
-            // Y16 format stores each pixel as 2 bytes (Little Endian):
-            // Byte 0: LOW byte, Byte 1: HIGH byte
-            // Value range: 0-65535 (16-bit)
             int byteIndex = 0;
             for (int i = 0; i < pixels.length; i++) {
                 if (byteIndex + 1 >= frameCopy.length) {
@@ -1697,28 +1735,76 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // Read 16-bit Y16 value (Little Endian)
                 int lowByte = frameCopy[byteIndex] & 0xFF;
                 int highByte = frameCopy[byteIndex + 1] & 0xFF;
-                int y16Value = (highByte << 8) | lowByte;  // Combine to 16-bit value (0-65535)
+                int y16Value = (highByte << 8) | lowByte;
 
-                // Scale 16-bit value (0-65535) to 8-bit (0-255) for colormap
-                int y8Value = (y16Value >> 8);  // Use upper 8 bits for better dynamic range
+                // Scale 16-bit (0-65535) to 8-bit (0-255) for colormap
+                int y8Value = (y16Value >> 8);
 
-                byteIndex += 2;  // Move to next pixel (2 bytes per pixel in Y16)
+                byteIndex += 2;
 
-                // Apply thermal colormap to scaled value
+                // Apply thermal colormap
                 pixels[i] = applyThermalColormap(y8Value);
             }
 
-            // Set all pixels at once (more efficient than pixel-by-pixel)
             bitmap.setPixels(pixels, 0, BOSON_WIDTH, 0, 0, BOSON_WIDTH, BOSON_HEIGHT);
-
-            // Rewind buffer before returning so it's ready for next use
-            // This is critical if the USB layer reuses the same ByteBuffer object
             frameData.rewind();
 
             return bitmap;
 
         } catch (Exception e) {
-            Log.e(TAG, "Error converting thermal frame", e);
+            Log.e(TAG, "Error converting Y16 frame", e);
+            return null;
+        }
+    }
+
+    /**
+     * Convert I420 format (YUV420 colorized) to bitmap
+     * Format: 640×512, YUV420 planar (Y plane + U plane + V plane)
+     */
+    private Bitmap convertI420ToBitmap(ByteBuffer frameData, int available) {
+        try {
+            if (available < I420_FRAME_SIZE) {
+                Log.w(TAG, "Incomplete I420 frame: expected " + I420_FRAME_SIZE + " bytes, got " + available);
+                return null;
+            }
+
+            // Make defensive copy
+            frameData.rewind();
+            byte[] frameCopy = new byte[I420_FRAME_SIZE];
+            frameData.get(frameCopy);
+
+            // Create bitmap (640×512)
+            Bitmap bitmap = Bitmap.createBitmap(I420_WIDTH, I420_HEIGHT, Bitmap.Config.ARGB_8888);
+            int[] pixels = new int[I420_WIDTH * I420_HEIGHT];
+
+            // I420 structure:
+            // Y plane: 640×512 bytes (full resolution luminance)
+            // U plane: 320×256 bytes (subsampled chrominance)
+            // V plane: 320×256 bytes (subsampled chrominance)
+            int ySize = I420_WIDTH * I420_HEIGHT;
+            int uvSize = (I420_WIDTH / 2) * (I420_HEIGHT / 2);
+
+            // Extract Y plane and apply colormap (ignoring U/V for thermal visualization)
+            for (int i = 0; i < pixels.length; i++) {
+                if (i >= ySize) {
+                    Log.w(TAG, "Y plane underrun at pixel " + i);
+                    break;
+                }
+
+                // Read Y value from Y plane
+                int yValue = frameCopy[i] & 0xFF;
+
+                // Apply thermal colormap to luminance
+                pixels[i] = applyThermalColormap(yValue);
+            }
+
+            bitmap.setPixels(pixels, 0, I420_WIDTH, 0, 0, I420_WIDTH, I420_HEIGHT);
+            frameData.rewind();
+
+            return bitmap;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error converting I420 frame", e);
             return null;
         }
     }
