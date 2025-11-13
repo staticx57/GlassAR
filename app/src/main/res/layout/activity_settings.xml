@@ -2,33 +2,74 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="#000000"
+    android:fillViewport="true">
 
 <LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:padding="20dp">
+    android:padding="16dp">
 
-    <!-- Title -->
+    <!-- ========== HEADER ========== -->
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Glass AR Settings"
-        android:textColor="#FFFFFF"
-        android:textSize="24sp"
+        android:text="⚙ Glass AR Settings"
+        android:textColor="#00FF00"
+        android:textSize="22sp"
         android:textStyle="bold"
-        android:layout_marginBottom="20dp" />
+        android:layout_marginBottom="8dp" />
 
-    <!-- Current URL Display -->
+    <!-- System Info -->
+    <TextView
+        android:id="@+id/system_info_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Loading system info..."
+        android:textColor="#AAAAAA"
+        android:textSize="11sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- ========== NETWORK SECTION ========== -->
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#00FF00"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="📡 NETWORK &amp; SERVER"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Network Info -->
+    <TextView
+        android:id="@+id/network_info_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Checking network..."
+        android:textColor="#AAAAAA"
+        android:textSize="12sp"
+        android:background="#1A1A1A"
+        android:padding="10dp"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Current URL -->
     <TextView
         android:id="@+id/current_url_text"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Current: http://192.168.1.100:8080"
         android:textColor="#00FF00"
-        android:textSize="14sp"
-        android:layout_marginBottom="20dp" />
+        android:textSize="13sp"
+        android:layout_marginBottom="8dp" />
 
     <!-- Server URL Label -->
     <TextView
@@ -36,8 +77,8 @@
         android:layout_height="wrap_content"
         android:text="Server URL:"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:layout_marginBottom="8dp" />
+        android:textSize="14sp"
+        android:layout_marginBottom="6dp" />
 
     <!-- Server URL Input -->
     <EditText
@@ -46,44 +87,49 @@
         android:layout_height="wrap_content"
         android:hint="http://192.168.1.100:8080"
         android:textColor="#FFFFFF"
-        android:textColorHint="#888888"
-        android:textSize="18sp"
+        android:textColorHint="#666666"
+        android:textSize="16sp"
         android:inputType="textUri"
         android:imeOptions="actionDone"
-        android:background="#333333"
+        android:background="#222222"
         android:padding="12dp"
-        android:layout_marginBottom="20dp" />
+        android:layout_marginBottom="8dp" />
 
-    <!-- Instructions -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Use Vysor + remote keyboard to edit\nFormat: http://IP:PORT"
-        android:textColor="#AAAAAA"
-        android:textSize="12sp"
-        android:layout_marginBottom="20dp" />
+        android:text="Use Vysor + keyboard to edit • Format: http://IP:PORT"
+        android:textColor="#888888"
+        android:textSize="11sp"
+        android:layout_marginBottom="12dp" />
 
-    <!-- Divider -->
-    <View
+    <!-- Test Connection Button -->
+    <Button
+        android:id="@+id/test_connection_button"
         android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="#444444"
-        android:layout_marginBottom="20dp" />
+        android:layout_height="wrap_content"
+        android:text="Test Connection"
+        android:textColor="#FFFFFF"
+        android:background="#0066CC"
+        android:padding="10dp"
+        android:layout_marginBottom="12dp" />
 
-    <!-- Auto-connect setting -->
+    <!-- Auto-connect -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="16dp">
+        android:layout_marginBottom="8dp"
+        android:background="#1A1A1A"
+        android:padding="10dp">
 
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Auto-connect to server"
+            android:text="Auto-connect to server on startup"
             android:textColor="#FFFFFF"
-            android:textSize="16sp" />
+            android:textSize="14sp" />
 
         <CheckBox
             android:id="@+id/auto_connect_checkbox"
@@ -92,12 +138,49 @@
             android:checked="true" />
     </LinearLayout>
 
-    <!-- RGB Fallback setting -->
+    <!-- Server Frame Rate -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Server Frame Rate:"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="6dp" />
+
+    <Spinner
+        android:id="@+id/frame_rate_spinner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#222222"
+        android:padding="10dp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- ========== CAMERA SECTION ========== -->
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#00FF00"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="📷 CAMERA &amp; DISPLAY"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <!-- RGB Fallback -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:layout_marginBottom="16dp">
+        android:layout_marginBottom="8dp"
+        android:background="#1A1A1A"
+        android:padding="10dp">
 
         <TextView
             android:layout_width="0dp"
@@ -105,7 +188,7 @@
             android:layout_weight="1"
             android:text="Enable RGB camera fallback"
             android:textColor="#FFFFFF"
-            android:textSize="16sp" />
+            android:textSize="14sp" />
 
         <CheckBox
             android:id="@+id/rgb_fallback_checkbox"
@@ -114,78 +197,266 @@
             android:checked="true" />
     </LinearLayout>
 
-    <!-- Default Colormap setting -->
+    <!-- Default Colormap -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Default Thermal Colormap:"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:layout_marginBottom="8dp" />
+        android:textSize="14sp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="6dp" />
 
     <Spinner
         android:id="@+id/colormap_spinner"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#333333"
-        android:padding="12dp"
+        android:background="#222222"
+        android:padding="10dp"
         android:layout_marginBottom="16dp" />
 
-    <!-- Frame send rate -->
+    <!-- ========== RECORDING SECTION ========== -->
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#00FF00"
+        android:layout_marginBottom="12dp" />
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Server Frame Rate (FPS):"
+        android:text="🎥 RECORDING"
         android:textColor="#FFFFFF"
         android:textSize="16sp"
-        android:layout_marginBottom="8dp" />
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Recording Frame Interval -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Recording Quality:"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginBottom="6dp" />
 
     <Spinner
-        android:id="@+id/frame_rate_spinner"
+        android:id="@+id/recording_interval_spinner"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#333333"
-        android:padding="12dp"
-        android:layout_marginBottom="30dp" />
+        android:background="#222222"
+        android:padding="10dp"
+        android:layout_marginBottom="8dp" />
 
-    <!-- Buttons -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Higher FPS = larger file size"
+        android:textColor="#888888"
+        android:textSize="11sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- ========== INTERFACE SECTION ========== -->
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#00FF00"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🎛 INTERFACE &amp; FEEDBACK"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Haptic Feedback -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp"
+        android:background="#1A1A1A"
+        android:padding="10dp">
 
-        <!-- Save Button -->
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Haptic feedback (vibration)"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+
+        <CheckBox
+            android:id="@+id/haptic_feedback_checkbox"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checked="true" />
+    </LinearLayout>
+
+    <!-- Audio Feedback -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp"
+        android:background="#1A1A1A"
+        android:padding="10dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Audio feedback (camera shutter)"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+
+        <CheckBox
+            android:id="@+id/audio_feedback_checkbox"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:checked="true" />
+    </LinearLayout>
+
+    <!-- Temperature Unit -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Temperature Unit:"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="6dp" />
+
+    <Spinner
+        android:id="@+id/temp_unit_spinner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#222222"
+        android:padding="10dp"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Battery Alert Threshold -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Low Battery Alert:"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginBottom="6dp" />
+
+    <Spinner
+        android:id="@+id/battery_alert_spinner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#222222"
+        android:padding="10dp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- ========== AI/DETECTION SECTION ========== -->
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#00FF00"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🤖 AI DETECTION"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Detection Confidence -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Detection Confidence Threshold:"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:layout_marginBottom="6dp" />
+
+    <Spinner
+        android:id="@+id/detection_confidence_spinner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#222222"
+        android:padding="10dp"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Higher = fewer false positives"
+        android:textColor="#888888"
+        android:textSize="11sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- ========== ACTION BUTTONS ========== -->
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="2dp"
+        android:background="#00FF00"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Save and Cancel Buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
         <Button
             android:id="@+id/save_button"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Save"
+            android:text="✓ Save Settings"
             android:textColor="#FFFFFF"
-            android:background="#0088FF"
-            android:layout_marginEnd="10dp"
-            android:padding="12dp" />
+            android:textStyle="bold"
+            android:background="#00AA00"
+            android:layout_marginEnd="8dp"
+            android:padding="14dp" />
 
-        <!-- Cancel Button -->
         <Button
             android:id="@+id/cancel_button"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Cancel"
+            android:text="✗ Cancel"
             android:textColor="#FFFFFF"
-            android:background="#888888"
-            android:padding="12dp" />
+            android:background="#666666"
+            android:padding="14dp" />
     </LinearLayout>
+
+    <!-- Reset Button -->
+    <Button
+        android:id="@+id/reset_defaults_button"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="↺ Reset to Defaults"
+        android:textColor="#FFFFFF"
+        android:background="#CC6600"
+        android:padding="12dp"
+        android:layout_marginBottom="16dp" />
 
     <!-- Helper Text -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="\nPress Camera button to exit\nChanges apply after app restart"
-        android:textColor="#AAAAAA"
-        android:textSize="12sp"
-        android:layout_marginTop="20dp" />
+        android:text="💡 Tips:\n• Use Vysor mouse to click controls\n• Press Camera button to exit\n• Most changes apply immediately\n• Swipe down to dismiss keyboard"
+        android:textColor="#888888"
+        android:textSize="11sp"
+        android:lineSpacingExtra="2dp"
+        android:layout_marginBottom="20dp" />
 
 </LinearLayout>
 </ScrollView>
