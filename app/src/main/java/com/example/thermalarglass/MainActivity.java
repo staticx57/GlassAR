@@ -547,10 +547,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     return;
                 }
 
-                // Create Pictures/ThermalAR directory
+                // Create Pictures/ThermalAR directory and VALIDATE it succeeded
                 File picturesDir = new File(getExternalFilesDir(android.os.Environment.DIRECTORY_PICTURES), "ThermalAR");
                 if (!picturesDir.exists()) {
-                    picturesDir.mkdirs();
+                    boolean created = picturesDir.mkdirs();
+                    if (!created) {
+                        Log.e(TAG, "FAILED to create snapshot directory: " + picturesDir.getAbsolutePath());
+                        Log.e(TAG, "Check storage permissions and available space");
+                        runOnUiThread(() -> {
+                            Toast.makeText(this,
+                                "Failed to create snapshot directory - check storage permissions",
+                                Toast.LENGTH_LONG).show();
+                            if (mProcessingIndicator != null) {
+                                mProcessingIndicator.setVisibility(View.GONE);
+                            }
+                        });
+                        return;
+                    }
+                    Log.i(TAG, "Created snapshot directory: " + picturesDir.getAbsolutePath());
                 }
 
                 // Generate filename with timestamp
@@ -559,22 +573,55 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 String filename = "thermal_" + timestamp + ".png";
                 File file = new File(picturesDir, filename);
 
-                // Save bitmap to file
-                FileOutputStream out = new FileOutputStream(file);
-                snapshot.compress(Bitmap.CompressFormat.PNG, 100, out);
-                out.flush();
-                out.close();
+                // Save bitmap to file with VALIDATION
+                FileOutputStream out = null;
+                try {
+                    out = new FileOutputStream(file);
 
-                Log.i(TAG, "Snapshot saved: " + file.getAbsolutePath());
-
-                // Show success message
-                runOnUiThread(() -> {
-                    Toast.makeText(this, "Snapshot saved: " + filename, Toast.LENGTH_SHORT).show();
-                    if (mProcessingIndicator != null) {
-                        mProcessingIndicator.setVisibility(View.GONE);
+                    // VALIDATE: Check if compression succeeded
+                    boolean compressed = snapshot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                    if (!compressed) {
+                        Log.e(TAG, "FAILED to compress bitmap to PNG");
+                        throw new IOException("Bitmap compression failed");
                     }
-                    performHapticFeedback();
-                });
+
+                    out.flush();
+                    out.close();
+                    out = null;  // Prevent double-close in finally
+
+                    // VALIDATE: Verify file was created and has content
+                    if (!file.exists()) {
+                        Log.e(TAG, "FAILED - snapshot file does not exist after write");
+                        throw new IOException("File not created");
+                    }
+
+                    long fileSize = file.length();
+                    if (fileSize == 0) {
+                        Log.e(TAG, "FAILED - snapshot file is empty (0 bytes)");
+                        throw new IOException("File is empty");
+                    }
+
+                    Log.i(TAG, "✓ Snapshot saved successfully: " + file.getAbsolutePath() + " (" + fileSize + " bytes)");
+
+                    // Show success message
+                    final long finalFileSize = fileSize;
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, "Snapshot saved: " + filename + " (" + finalFileSize + " bytes)", Toast.LENGTH_SHORT).show();
+                        if (mProcessingIndicator != null) {
+                            mProcessingIndicator.setVisibility(View.GONE);
+                        }
+                        performHapticFeedback();
+                    });
+
+                } finally {
+                    if (out != null) {
+                        try {
+                            out.close();
+                        } catch (IOException e) {
+                            Log.e(TAG, "Error closing output stream", e);
+                        }
+                    }
+                }
 
             } catch (IOException e) {
                 Log.e(TAG, "Failed to save snapshot", e);
@@ -640,14 +687,36 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             String timestamp = sdf.format(new Date());
             String dirName = "recording_" + timestamp;
 
+            // Create base videos directory and VALIDATE
             File videosDir = new File(getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES), "ThermalAR");
             if (!videosDir.exists()) {
-                videosDir.mkdirs();
+                boolean created = videosDir.mkdirs();
+                if (!created) {
+                    Log.e(TAG, "FAILED to create videos directory: " + videosDir.getAbsolutePath());
+                    Log.e(TAG, "Check storage permissions and available space");
+                    Toast.makeText(this,
+                        "Failed to create recording directory - check storage permissions",
+                        Toast.LENGTH_LONG).show();
+                    mIsRecording = false;
+                    return;
+                }
+                Log.i(TAG, "Created videos directory: " + videosDir.getAbsolutePath());
             }
 
+            // Create specific recording directory and VALIDATE
             mRecordingDir = new File(videosDir, dirName);
             if (!mRecordingDir.exists()) {
-                mRecordingDir.mkdirs();
+                boolean created = mRecordingDir.mkdirs();
+                if (!created) {
+                    Log.e(TAG, "FAILED to create recording directory: " + mRecordingDir.getAbsolutePath());
+                    Log.e(TAG, "Check storage permissions and available space");
+                    Toast.makeText(this,
+                        "Failed to create recording directory - check storage permissions",
+                        Toast.LENGTH_LONG).show();
+                    mIsRecording = false;
+                    return;
+                }
+                Log.i(TAG, "Created recording directory: " + mRecordingDir.getAbsolutePath());
             }
 
             mRecordingFrameCounter = 0;
@@ -661,7 +730,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show();
             });
 
-            Log.i(TAG, "Recording to: " + mRecordingDir.getAbsolutePath());
+            Log.i(TAG, "✓ Recording to: " + mRecordingDir.getAbsolutePath());
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to start recording", e);
@@ -755,15 +824,31 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // Save frame in background thread
         final Bitmap frameCopy = frame.copy(frame.getConfig(), false);
         new Thread(() -> {
+            FileOutputStream out = null;
             try {
                 String filename = String.format(Locale.US, "frame_%06d.png", mRecordingSavedFrames);
                 File frameFile = new File(mRecordingDir, filename);
 
-                FileOutputStream out = new FileOutputStream(frameFile);
-                frameCopy.compress(Bitmap.CompressFormat.PNG, 100, out);
+                out = new FileOutputStream(frameFile);
+
+                // VALIDATE: Check if compression succeeded
+                boolean compressed = frameCopy.compress(Bitmap.CompressFormat.PNG, 100, out);
+                if (!compressed) {
+                    Log.e(TAG, "FAILED to compress recording frame " + mRecordingSavedFrames);
+                    throw new IOException("Bitmap compression failed");
+                }
+
                 out.flush();
                 out.close();
+                out = null;  // Prevent double-close
 
+                // VALIDATE: File exists and has content
+                if (!frameFile.exists() || frameFile.length() == 0) {
+                    Log.e(TAG, "FAILED to save recording frame - file missing or empty");
+                    throw new IOException("Frame file not created properly");
+                }
+
+                // Only increment if save actually succeeded
                 mRecordingSavedFrames++;
 
                 // Update UI every 30 frames (~3 seconds)
@@ -777,7 +862,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 }
 
             } catch (IOException e) {
-                Log.e(TAG, "Failed to save recording frame", e);
+                Log.e(TAG, "Failed to save recording frame " + mRecordingSavedFrames, e);
+                // Note: Frame counter NOT incremented on failure
+            } finally {
+                if (out != null) {
+                    try {
+                        out.close();
+                    } catch (IOException e) {
+                        Log.e(TAG, "Error closing frame output stream", e);
+                    }
+                }
             }
         }).start();
     }
@@ -1167,7 +1261,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 Log.w(TAG, "Invalid thermal frame size: " +
                       (thermalFrame != null ? thermalFrame.length : "null") +
                       " (expected: " + expectedSize + ")");
-                return new ThermalData(0, 0, 0, 0);
+                return null;  // Return null to indicate extraction failed
             }
 
             // Calculate center pixel offset (center of 320x256 frame)
@@ -1179,7 +1273,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (centerOffset + 1 >= thermalFrame.length) {
                 Log.e(TAG, "Center pixel offset out of bounds: " + centerOffset +
                       " (frame length: " + thermalFrame.length + ")");
-                return new ThermalData(0, 0, 0, 0);
+                return null;  // Return null to indicate extraction failed
             }
 
             // Extract center pixel value
@@ -1210,8 +1304,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         } catch (Exception e) {
             Log.e(TAG, "Error extracting temperatures", e);
-            // Return default values on error
-            return new ThermalData(0, 0, 0, 0);
+            // Return null to indicate extraction failed
+            return null;
         }
     }
 
@@ -1454,13 +1548,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
                 if (mCamera.open(device)) {
                     try {
-                        // Set Boson 320 resolution
-                        mCamera.setPreviewSize(BOSON_WIDTH, BOSON_HEIGHT);
+                        // Set Boson 320 resolution and VALIDATE it succeeded
+                        boolean formatSet = mCamera.setPreviewSize(BOSON_WIDTH, BOSON_HEIGHT);
+                        if (!formatSet) {
+                            Log.e(TAG, "FAILED to set preview size to " + BOSON_WIDTH + "x" + BOSON_HEIGHT);
+                            Log.e(TAG, "Camera format negotiation failed - incompatible resolution or camera error");
+                            Toast.makeText(MainActivity.this,
+                                "Failed to configure camera format - check camera compatibility",
+                                Toast.LENGTH_LONG).show();
+                            mCamera.close();
+                            return;
+                        }
+
+                        Log.i(TAG, "Preview size set successfully: " + BOSON_WIDTH + "x" + BOSON_HEIGHT);
                         mCamera.setFrameCallback(mFrameCallback);
 
                         if (mCamera.startPreview()) {
                             mThermalCameraActive = true;
-                            Log.i(TAG, "Boson 320 camera started");
+                            Log.i(TAG, "✓ Boson 320 camera started successfully");
 
                             // Dismiss USB disconnect alert if showing
                             if (mAlertArea != null && mAlertText != null) {
@@ -1471,11 +1576,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         } else {
                             Log.e(TAG, "Failed to start preview");
                             Toast.makeText(MainActivity.this, "Failed to start camera", Toast.LENGTH_SHORT).show();
+                            mCamera.close();
                         }
 
                     } catch (Exception e) {
                         Log.e(TAG, "Error starting camera", e);
                         Toast.makeText(MainActivity.this, "Error starting camera: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                        if (mCamera != null) {
+                            mCamera.close();
+                        }
                     }
                 } else {
                     Log.e(TAG, "Failed to open camera");
@@ -1555,15 +1664,26 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // Extract temperature measurements from thermal data
                 ThermalData thermalData = extractTemperatures(frameData);
 
-                // Update center temperature display
-                runOnUiThread(() -> {
-                    if (mCenterTemperature != null) {
-                        mCenterTemperature.setText(String.format("%.1f°C", thermalData.centerTemp));
-                    }
-                });
+                // VALIDATE: Check if extraction succeeded
+                if (thermalData == null) {
+                    Log.w(TAG, "Failed to extract temperature data from frame - skipping temperature update");
+                    // Don't update display or send to server if extraction failed
+                    runOnUiThread(() -> {
+                        if (mCenterTemperature != null) {
+                            mCenterTemperature.setText("--°C");  // Show invalid
+                        }
+                    });
+                } else {
+                    // Update center temperature display
+                    runOnUiThread(() -> {
+                        if (mCenterTemperature != null) {
+                            mCenterTemperature.setText(String.format("%.1f°C", thermalData.centerTemp));
+                        }
+                    });
 
-                // Send thermal data measurements to companion app
-                sendThermalData(thermalData);
+                    // Send thermal data measurements to companion app
+                    sendThermalData(thermalData);
+                }
 
                 // Encode to base64 for JSON transmission
                 String frameBase64 = Base64.encodeToString(frameData, Base64.NO_WRAP);
@@ -2082,7 +2202,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private void startRgbCamera() {
         try {
             // Open Glass EE2 built-in camera (usually camera 0)
+            Log.i(TAG, "Opening RGB camera (camera 0)...");
             mRgbCamera = android.hardware.Camera.open(0);
+
+            // VALIDATE: Check if camera opened successfully
+            if (mRgbCamera == null) {
+                Log.e(TAG, "Failed to open RGB camera - returned null");
+                Log.e(TAG, "Camera may be in use by another app or hardware unavailable");
+                Toast.makeText(this, "RGB camera not available", Toast.LENGTH_SHORT).show();
+                mRgbCameraEnabled = false;
+                return;
+            }
 
             android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
             // Set parameters for Glass EE2 camera (640x360 to match display)
@@ -2100,11 +2230,27 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             mRgbCamera.startPreview();
             mRgbCameraEnabled = true;
 
-            Log.i(TAG, "RGB camera started");
+            Log.i(TAG, "✓ RGB camera started successfully");
+
+        } catch (RuntimeException e) {
+            Log.e(TAG, "Failed to start RGB camera - RuntimeException: " + e.getMessage(), e);
+            Toast.makeText(this, "Failed to start RGB camera: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+
+            // Clean up on failure
+            if (mRgbCamera != null) {
+                try {
+                    mRgbCamera.release();
+                } catch (Exception ex) {
+                    Log.e(TAG, "Error releasing camera on failure", ex);
+                }
+                mRgbCamera = null;
+            }
+            mRgbCameraEnabled = false;
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to start RGB camera", e);
+            Log.e(TAG, "Failed to start RGB camera: " + e.getMessage(), e);
             Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_SHORT).show();
+            mRgbCameraEnabled = false;
         }
     }
 

@@ -225,6 +225,7 @@ public class NativeUVCCamera {
      */
     private boolean negotiateFormat(int width, int height) {
         if (mConnection == null) {
+            Log.e(TAG, "Cannot negotiate format - no USB connection");
             return false;
         }
 
@@ -232,8 +233,14 @@ public class NativeUVCCamera {
             // Find video control interface
             UsbInterface controlInterface = findVideoControlInterface(mDevice);
             if (controlInterface == null) {
-                Log.w(TAG, "No video control interface found, skipping format negotiation");
-                return true;  // Some cameras work without explicit negotiation
+                Log.w(TAG, "No video control interface found - basic UVC cameras may still work");
+                // Only proceed if we have streaming endpoint (fallback mode)
+                if (mStreamingEndpoint == null) {
+                    Log.e(TAG, "No streaming endpoint available - cannot proceed");
+                    return false;
+                }
+                Log.i(TAG, "Attempting to stream without format negotiation (basic mode)");
+                return true;  // Allow basic cameras without control interface
             }
 
             // Build probe control structure with requested parameters
@@ -253,8 +260,9 @@ public class NativeUVCCamera {
             );
 
             if (result < 0) {
-                Log.w(TAG, "SET_CUR(PROBE) failed: " + result + ", continuing anyway");
-                return true;  // Many cameras still work
+                Log.e(TAG, "SET_CUR(PROBE) FAILED: " + result);
+                Log.e(TAG, "Camera rejected format negotiation - incompatible format or camera malfunction");
+                return false;  // FAIL HARD - negotiation is critical
             }
             Log.d(TAG, "SET_CUR(PROBE) sent: " + result + " bytes");
 
@@ -273,7 +281,7 @@ public class NativeUVCCamera {
             if (result > 0) {
                 Log.d(TAG, "GET_CUR(PROBE) received: " + result + " bytes");
 
-                // Parse camera's response to see what it will actually provide
+                // Parse and VALIDATE camera's response
                 int formatIndex = responseData[2] & 0xFF;
                 int frameIndex = responseData[3] & 0xFF;
                 int frameSize = ((responseData[21] & 0xFF) << 24) |
@@ -284,8 +292,21 @@ public class NativeUVCCamera {
                 Log.i(TAG, "Camera response: formatIndex=" + formatIndex +
                           ", frameIndex=" + frameIndex +
                           ", frameSize=" + frameSize + " bytes");
+
+                // VALIDATE: Check if frame size makes sense
+                int expectedMinSize = width * height;  // Minimum for any format
+                int expectedMaxSize = width * height * 4;  // Maximum (RGBA)
+
+                if (frameSize < expectedMinSize || frameSize > expectedMaxSize) {
+                    Log.e(TAG, "VALIDATION FAILED: Frame size " + frameSize +
+                              " outside expected range [" + expectedMinSize + "-" + expectedMaxSize + "]");
+                    Log.e(TAG, "Camera may not support requested resolution");
+                    return false;
+                }
             } else {
-                Log.w(TAG, "GET_CUR(PROBE) failed: " + result);
+                Log.e(TAG, "GET_CUR(PROBE) FAILED: " + result);
+                Log.e(TAG, "Cannot verify camera format - negotiation incomplete");
+                return false;
             }
 
             // Step 3: SET_CUR(COMMIT) - Commit to the negotiated format
@@ -300,17 +321,18 @@ public class NativeUVCCamera {
             );
 
             if (result < 0) {
-                Log.w(TAG, "SET_CUR(COMMIT) failed: " + result + ", continuing anyway");
-            } else {
-                Log.d(TAG, "SET_CUR(COMMIT) sent: " + result + " bytes");
+                Log.e(TAG, "SET_CUR(COMMIT) FAILED: " + result);
+                Log.e(TAG, "Camera failed to commit format - negotiation incomplete");
+                return false;
             }
+            Log.d(TAG, "SET_CUR(COMMIT) sent: " + result + " bytes");
 
-            Log.i(TAG, "Format negotiation completed for " + width + "x" + height);
+            Log.i(TAG, "✓ Format negotiation COMPLETED SUCCESSFULLY for " + width + "x" + height);
             return true;
 
         } catch (Exception e) {
-            Log.w(TAG, "Format negotiation error, continuing anyway", e);
-            return true;  // Proceed even if negotiation fails
+            Log.e(TAG, "Format negotiation FAILED with exception", e);
+            return false;  // FAIL on exception
         }
     }
 
