@@ -78,6 +78,20 @@
             android:textColor="#00FF00"
             android:textSize="12sp"
             android:paddingStart="8dp" />
+
+        <!-- Settings button (prominent for Vysor access) -->
+        <Button
+            android:id="@+id/settings_button"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:text="⚙"
+            android:textSize="24sp"
+            android:textColor="#FFFFFF"
+            android:background="#CC444444"
+            android:padding="4dp"
+            android:clickable="true"
+            android:focusable="true" />
     </LinearLayout>
 
     <!-- Center crosshair/reticle -->
