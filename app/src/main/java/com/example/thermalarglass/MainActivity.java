@@ -16,6 +16,8 @@ import android.hardware.usb.UsbDevice;
 import android.media.MediaRecorder;
 import android.os.BatteryManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
 import android.view.GestureDetector;
@@ -121,6 +123,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Smart Features
     private ServerDiscovery mServerDiscovery;
     private SmartDisplayManager mSmartDisplay;
+
+    // Settings sync
+    private static final int SETTINGS_SYNC_INTERVAL_MS = 30000;  // 30 seconds
+    private Handler mSyncHandler;
+    private Runnable mSyncRunnable;
+    private float mCurrentFPS = 0.0f;
+    private long mLastFPSUpdate = 0;
+    private int mFPSFrameCount = 0;
 
     // Display modes
     public static final String MODE_THERMAL_ONLY = "thermal_only";
@@ -1495,6 +1505,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
                         // Start periodic network stats updates (every 5 seconds)
                         startNetworkStatsUpdates();
+
+                        // Start settings sync
+                        startSettingsSync();
                     });
                 }
             });
@@ -1508,6 +1521,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         mConnectionStatus.setTextColor(Color.RED);
                         Toast.makeText(MainActivity.this, "Disconnected from server", Toast.LENGTH_SHORT).show();
                         Log.w(TAG, "Disconnected from server");
+
+                        // Stop settings sync
+                        stopSettingsSync();
                     });
                 }
             });
@@ -1562,6 +1578,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 }
             });
 
+            // Settings sync response handler
+            mSocket.on("settings_sync_response", new Emitter.Listener() {
+                @Override
+                public void call(Object... args) {
+                    JSONObject data = (JSONObject) args[0];
+                    handleSettingsSyncResponse(data);
+                }
+            });
+
             mSocket.connect();
             
         } catch (URISyntaxException e) {
@@ -1582,6 +1607,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         // Initialize server discovery
         mServerDiscovery = new ServerDiscovery(this);
+
+        // Initialize settings sync
+        initializeSettingsSync();
+        Log.i(TAG, "✓ Settings sync initialized (interval: " + (SETTINGS_SYNC_INTERVAL_MS / 1000) + "s)");
 
         // Try automatic server discovery
         startAutomaticServerDiscovery();
@@ -1639,6 +1668,142 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 // Silently fall back to saved URL - no need to alarm user
             }
         });
+    }
+
+    /**
+     * Initialize periodic settings synchronization
+     */
+    private void initializeSettingsSync() {
+        mSyncHandler = new Handler(Looper.getMainLooper());
+        mSyncRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (mConnected && mSocket != null) {
+                    sendSettingsSync();
+                    mSyncHandler.postDelayed(this, SETTINGS_SYNC_INTERVAL_MS);
+                }
+            }
+        };
+    }
+
+    /**
+     * Send settings sync to server
+     */
+    private void sendSettingsSync() {
+        try {
+            JSONObject payload = new JSONObject();
+            JSONObject settings = new JSONObject();
+
+            // Glass settings
+            settings.put("format", mDetectedFormat != null ? mDetectedFormat.toString() : "unknown");
+            settings.put("has_temperature", mDetectedFormat == BosonFormat.Y16);
+            settings.put("display_mode", mSmartDisplay != null ?
+                mSmartDisplay.getDisplayMode().toString() : "STANDARD");
+            settings.put("current_mode", mCurrentMode);
+            settings.put("frame_skip", 1);  // Currently no frame skip
+            settings.put("server_url", getServerUrl());
+            settings.put("app_version", BuildConfig.VERSION_NAME);
+            settings.put("uptime_ms", android.os.SystemClock.elapsedRealtime());
+            settings.put("fps_actual", mCurrentFPS);
+
+            payload.put("glass_settings", settings);
+            payload.put("timestamp", System.currentTimeMillis());
+
+            mSocket.emit("settings_sync", payload);
+            Log.d(TAG, "Settings sync sent (fps=" + String.format("%.1f", mCurrentFPS) + ")");
+
+        } catch (JSONException e) {
+            Log.e(TAG, "Error creating settings sync", e);
+        }
+    }
+
+    /**
+     * Handle settings sync response from server
+     */
+    private void handleSettingsSyncResponse(JSONObject data) {
+        try {
+            String syncStatus = data.getString("sync_status");
+            JSONObject serverSettings = data.getJSONObject("server_settings");
+
+            // Log server info
+            boolean modelLoaded = serverSettings.getBoolean("model_loaded");
+            int maxFps = serverSettings.getInt("max_fps");
+            Log.d(TAG, "Server sync: status=" + syncStatus +
+                ", model=" + (modelLoaded ? "ready" : "loading") +
+                ", max_fps=" + maxFps);
+
+            // Check for mismatches
+            if (data.has("mismatches") && data.getJSONArray("mismatches").length() > 0) {
+                JSONArray mismatches = data.getJSONArray("mismatches");
+                Log.w(TAG, "Settings mismatches: " + mismatches.toString());
+
+                // Show notification for important mismatches
+                runOnUiThread(() -> {
+                    Toast.makeText(this,
+                        "Settings synced with server",
+                        Toast.LENGTH_SHORT).show();
+                });
+            }
+
+            // Update mode if server has different mode
+            if (serverSettings.has("processing_mode")) {
+                String serverMode = serverSettings.getString("processing_mode");
+                if (!serverMode.equals(mCurrentMode)) {
+                    Log.i(TAG, "Syncing mode from server: " + mCurrentMode + " → " + serverMode);
+                    final String newMode = serverMode;
+                    runOnUiThread(() -> {
+                        mCurrentMode = newMode;
+                        updateModeIndicator();
+                    });
+                }
+            }
+
+            // Log format preference if server suggests one
+            if (serverSettings.has("format_preferred")) {
+                String preferredFormat = serverSettings.getString("format_preferred");
+                Log.i(TAG, "Server prefers format: " + preferredFormat);
+            }
+
+        } catch (JSONException e) {
+            Log.e(TAG, "Error parsing settings sync response", e);
+        }
+    }
+
+    /**
+     * Calculate current FPS
+     */
+    private void updateFPS() {
+        mFPSFrameCount++;
+        long currentTime = System.currentTimeMillis();
+        long elapsed = currentTime - mLastFPSUpdate;
+
+        if (elapsed >= 1000) {  // Update every second
+            mCurrentFPS = (mFPSFrameCount * 1000.0f) / elapsed;
+            mFPSFrameCount = 0;
+            mLastFPSUpdate = currentTime;
+        }
+    }
+
+    /**
+     * Start settings sync when connected
+     */
+    private void startSettingsSync() {
+        // Send immediate sync
+        sendSettingsSync();
+
+        // Start periodic sync
+        mSyncHandler.postDelayed(mSyncRunnable, SETTINGS_SYNC_INTERVAL_MS);
+        Log.i(TAG, "Settings sync started");
+    }
+
+    /**
+     * Stop settings sync when disconnected
+     */
+    private void stopSettingsSync() {
+        if (mSyncHandler != null) {
+            mSyncHandler.removeCallbacks(mSyncRunnable);
+        }
+        Log.i(TAG, "Settings sync stopped");
     }
 
     private final NativeUSBMonitor.OnDeviceConnectListener mOnDeviceConnectListener = new NativeUSBMonitor.OnDeviceConnectListener() {
@@ -1774,6 +1939,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         @Override
         public void onFrame(final ByteBuffer frame) {
             mFrameCount++;
+
+            // Update FPS calculation for settings sync
+            updateFPS();
 
             // Update frame counter UI
             runOnUiThread(() ->

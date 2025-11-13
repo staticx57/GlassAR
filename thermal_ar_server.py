@@ -627,6 +627,73 @@ def handle_stats_request():
     """Send current statistics"""
     emit('stats', processor.stats)
 
+@socketio.on('settings_sync')
+def handle_settings_sync(data):
+    """Periodic settings synchronization from Glass"""
+    try:
+        glass_settings = data.get('glass_settings', {})
+        client_timestamp = data.get('timestamp')
+
+        # Log Glass settings
+        logger.info(f"Settings sync from Glass:")
+        logger.info(f"  Format: {glass_settings.get('format')}")
+        logger.info(f"  Display Mode: {glass_settings.get('display_mode')}")
+        logger.info(f"  Processing Mode: {glass_settings.get('current_mode')}")
+        logger.info(f"  FPS: {glass_settings.get('fps_actual', 0):.1f}")
+        logger.info(f"  App Version: {glass_settings.get('app_version')}")
+
+        # Check for mismatches
+        mismatches = []
+
+        # Compare processing mode
+        glass_mode = glass_settings.get('current_mode', '')
+        if glass_mode != current_mode:
+            mismatches.append({
+                'setting': 'current_mode',
+                'glass_value': glass_mode,
+                'server_value': current_mode
+            })
+            logger.warning(f"Mode mismatch: Glass={glass_mode}, Server={current_mode}")
+
+        # Check format compatibility
+        glass_format = glass_settings.get('format', 'unknown')
+        if glass_format not in ['MJPEG', 'Y16', 'I420', 'unknown']:
+            mismatches.append({
+                'setting': 'format',
+                'glass_value': glass_format,
+                'server_value': 'unsupported'
+            })
+            logger.warning(f"Unsupported format: {glass_format}")
+
+        # Build response
+        response = {
+            'server_settings': {
+                'processing_mode': current_mode,
+                'model_loaded': processor is not None,
+                'capabilities': ['object_detection', 'thermal_analysis'],
+                'max_fps': 30,
+                'compression_enabled': True,
+                'server_version': '1.0.0',
+                'format_preferred': 'MJPEG'  # Best compression/performance balance
+            },
+            'sync_status': 'ok' if len(mismatches) == 0 else 'mismatch',
+            'mismatches': mismatches,
+            'timestamp': int(time.time() * 1000),
+            'client_timestamp': client_timestamp
+        }
+
+        # Send response
+        emit('settings_sync_response', response)
+        logger.debug(f"Settings sync response sent ({len(mismatches)} mismatches)")
+
+    except Exception as e:
+        logger.error(f"Settings sync error: {e}")
+        emit('settings_sync_response', {
+            'sync_status': 'error',
+            'error': str(e),
+            'timestamp': int(time.time() * 1000)
+        })
+
 @socketio.on('start_recording')
 def handle_start_recording(data):
     """Start recording session"""
