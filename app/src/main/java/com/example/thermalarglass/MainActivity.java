@@ -642,7 +642,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      */
     private void startNetworkStatsUpdates() {
         // Use a handler to send network stats every 5 seconds
-        final android.os.Handler handler = new android.os.Handler();
+        final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
