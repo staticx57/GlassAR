@@ -2912,7 +2912,32 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (bestSize != null) {
                 Log.i(TAG, "Setting RGB camera preview size to " + bestSize.width + "x" + bestSize.height);
                 params.setPreviewSize(bestSize.width, bestSize.height);
-                mRgbCamera.setParameters(params);
+
+                // Set preview format to NV21 (most widely supported)
+                params.setPreviewFormat(android.graphics.ImageFormat.NV21);
+
+                // Set focus mode to auto if available
+                java.util.List<String> focusModes = params.getSupportedFocusModes();
+                if (focusModes != null && !focusModes.isEmpty()) {
+                    if (focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
+                        params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+                        Log.d(TAG, "Set focus mode: CONTINUOUS_VIDEO");
+                    } else if (focusModes.contains(android.hardware.Camera.Parameters.FOCUS_MODE_AUTO)) {
+                        params.setFocusMode(android.hardware.Camera.Parameters.FOCUS_MODE_AUTO);
+                        Log.d(TAG, "Set focus mode: AUTO");
+                    }
+                }
+
+                try {
+                    mRgbCamera.setParameters(params);
+                    Log.d(TAG, "Camera parameters set successfully");
+                } catch (RuntimeException e) {
+                    Log.e(TAG, "Failed to set camera parameters", e);
+                    mRgbCamera.release();
+                    mRgbCamera = null;
+                    Toast.makeText(this, "RGB camera parameters not supported", Toast.LENGTH_LONG).show();
+                    return;
+                }
             } else {
                 Log.e(TAG, "No supported preview sizes found!");
                 mRgbCamera.release();
@@ -2943,7 +2968,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
             Log.i(TAG, "Starting RGB camera preview");
             try {
+                // Give surface a moment to stabilize after thermal camera disconnect
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ie) {
+                    // Ignore
+                }
                 mRgbCamera.startPreview();
+                Log.i(TAG, "✓ RGB camera preview started successfully");
             } catch (RuntimeException e) {
                 Log.e(TAG, "startPreview() failed", e);
                 mRgbCamera.release();
