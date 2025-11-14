@@ -2894,14 +2894,44 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
 
             android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
-            // Set parameters for Glass EE2 camera (640x360 to match display)
-            Log.i(TAG, "Setting RGB camera preview size to 640x360");
-            params.setPreviewSize(640, 360);
-            mRgbCamera.setParameters(params);
+
+            // Find supported preview size closest to 640x360
+            java.util.List<android.hardware.Camera.Size> supportedSizes = params.getSupportedPreviewSizes();
+            android.hardware.Camera.Size bestSize = null;
+            int minDiff = Integer.MAX_VALUE;
+
+            Log.i(TAG, "Finding best preview size for 640x360 from " + supportedSizes.size() + " supported sizes");
+            for (android.hardware.Camera.Size size : supportedSizes) {
+                int diff = Math.abs(size.width - 640) + Math.abs(size.height - 360);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    bestSize = size;
+                }
+            }
+
+            if (bestSize != null) {
+                Log.i(TAG, "Setting RGB camera preview size to " + bestSize.width + "x" + bestSize.height);
+                params.setPreviewSize(bestSize.width, bestSize.height);
+                mRgbCamera.setParameters(params);
+            } else {
+                Log.e(TAG, "No supported preview sizes found!");
+                mRgbCamera.release();
+                mRgbCamera = null;
+                Toast.makeText(this, "RGB camera has no supported preview sizes", Toast.LENGTH_LONG).show();
+                return;
+            }
 
             // Set preview display to show on screen
             try {
                 Log.i(TAG, "Setting RGB camera preview display");
+                // Verify surface is valid before setting
+                if (mSurfaceHolder.getSurface() == null || !mSurfaceHolder.getSurface().isValid()) {
+                    Log.e(TAG, "Surface is not valid - cannot set preview display");
+                    mRgbCamera.release();
+                    mRgbCamera = null;
+                    Toast.makeText(this, "Display surface not ready", Toast.LENGTH_LONG).show();
+                    return;
+                }
                 mRgbCamera.setPreviewDisplay(mSurfaceHolder);
             } catch (java.io.IOException e) {
                 Log.e(TAG, "Failed to set preview display", e);
@@ -2912,7 +2942,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
 
             Log.i(TAG, "Starting RGB camera preview");
-            mRgbCamera.startPreview();
+            try {
+                mRgbCamera.startPreview();
+            } catch (RuntimeException e) {
+                Log.e(TAG, "startPreview() failed", e);
+                mRgbCamera.release();
+                mRgbCamera = null;
+                Toast.makeText(this, "Failed to start RGB camera preview", Toast.LENGTH_LONG).show();
+                return;
+            }
             mRgbCameraEnabled = true;
             mUsingRgbFallback = true;
 
