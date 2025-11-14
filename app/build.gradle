@@ -2,6 +2,13 @@ plugins {
     id 'com.android.application'
 }
 
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+    maven { url 'https://raw.githubusercontent.com/saki4510t/libcommon/master/repository/' }
+}
+
 android {
     namespace 'com.example.thermalarglass'
     compileSdk 33  // Update to support newer build tools while targeting API 27

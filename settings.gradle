@@ -6,15 +6,5 @@ pluginManagement {
     }
 }
 
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
-    repositories {
-        google()
-        mavenCentral()
-        maven { url 'https://jitpack.io' }
-        maven { url 'https://raw.githubusercontent.com/saki4510t/libcommon/master/repository/' }
-    }
-}
-
 rootProject.name = "ThermalARGlass"
 include ':app'
