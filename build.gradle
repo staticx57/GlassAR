@@ -6,13 +6,19 @@ buildscript {
         maven { url 'https://jitpack.io' }
     }
     dependencies {
-        // Android Gradle Plugin - updated for Gradle 9.x compatibility
-        classpath 'com.android.tools.build:gradle:8.2.0'
+        // Android Gradle Plugin - using version compatible with Gradle 7.6 wrapper
+        classpath 'com.android.tools.build:gradle:7.4.2'
     }
 }
 
-// Note: allprojects is deprecated in Gradle 7+
-// Repositories are now declared in settings.gradle
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+        maven { url 'https://raw.githubusercontent.com/saki4510t/libcommon/master/repository/' }
+    }
+}
 
 task clean(type: Delete) {
     delete rootProject.buildDir
