@@ -23,10 +23,10 @@ Streaming status: 1038 frames received, 0 errors
 
 ---
 
-## ❌ NOT WORKING - RGB Camera Fallback
+## ⚠️ AWAITING ON-DEVICE VERIFICATION - RGB Camera Fallback
 
 ### Issue: startPreview() RuntimeException
-**Status:** FAILING ❌
+**Status:** ROOT CAUSE IDENTIFIED, FIX APPLIED - NOT YET TESTED ON HARDWARE ⚠️
 **Priority:** HIGH
 
 **What We Know:**
@@ -37,7 +37,7 @@ Streaming status: 1038 frames received, 0 errors
 - Parameters set successfully (NV21 format, focus mode)
 - BUT: `startPreview()` throws RuntimeException
 
-**What We've Tried:**
+**What We've Tried (all targeted the symptom, not the cause):**
 - [x] Query supported sizes and pick closest match ❌ Didn't help
 - [x] Validate surface before use ❌ Surface is valid but still fails
 - [x] Set explicit preview format (NV21) ❌ Didn't help
@@ -45,6 +45,31 @@ Streaming status: 1038 frames received, 0 errors
 - [x] Add 100ms stabilization delay ❌ Didn't help
 - [x] Enhanced error handling ❌ Still fails
 - [x] Wrap all operations in try-catch ❌ Catches but doesn't fix
+
+**Root cause found (2026-09-24):** `startRgbCameraFallback()` called
+`mRgbCamera.setPreviewDisplay(mSurfaceHolder)` using the *same* `SurfaceHolder`
+that `renderThermalFrame()` drives via `Canvas` software rendering
+(`lockCanvas()`/`unlockCanvasAndPost()`). A `Surface` that has had a Canvas
+producer attached cannot reliably be handed to `android.hardware.Camera` as a
+preview target on Glass EE2's camera HAL — the legacy Camera API's native
+`startPreview()` fails to take over the surface, throwing `RuntimeException`.
+None of the seven prior fixes addressed this because they all assumed the
+surface itself was fine and tuned camera parameters/timing instead.
+
+**Fix applied (untested on hardware):**
+- Added a second, dedicated `SurfaceView` (`rgb_surface_view` in
+  `activity_main.xml`) that is never touched by Canvas rendering — only by
+  `Camera.setPreviewDisplay()`.
+- `startRgbCameraFallback()` now targets `mRgbSurfaceHolder` instead of
+  `mSurfaceHolder`, and toggles `View` visibility between the thermal surface
+  and the RGB surface.
+- `stopRgbCamera()` reverts visibility back to the thermal surface whenever
+  RGB fallback stops or fails at any point.
+- Compiles cleanly (`gradlew compileDebugJavaWithJavac` passes) but **has not
+  been run on an actual Glass EE2 device with the RGB camera** — needs
+  real-hardware confirmation that `startPreview()` no longer throws, and that
+  toggling between the two SurfaceViews doesn't introduce visible flicker or
+  timing issues on reconnect.
 
 **Error Stack Trace:**
 ```
@@ -151,7 +176,7 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 ## 🎯 Future Enhancements
 
 ### High Priority
-1. [ ] **Fix RGB camera fallback** - Currently broken
+1. [ ] **Verify RGB camera fallback fix on hardware** - Root cause fixed (dual-surface conflict), needs on-device confirmation
 2. [ ] **Verify display is correct** - Confirm split screen is fixed
 3. [ ] **Test Y16 format** - Radiometric data more useful than I420
 4. [ ] **Test MJPEG format** - Should work with current code
@@ -173,7 +198,7 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 ## 🐛 Bugs to Investigate
 
 ### Critical
-- [ ] RGB camera fallback not working (startPreview fails)
+- [ ] RGB camera fallback - fix applied (separate SurfaceView), needs on-device retest
 
 ### High
 - [ ] Verify I420 display is correct after headerless fix
@@ -219,7 +244,7 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 - [x] UVC streaming stability - ✅ PASSED (1038 frames, 0 errors)
 - [x] Frame delivery - ✅ PASSED (correct size, format detected)
 - [x] Snapshot capture - ✅ PASSED (PNG saved successfully)
-- [ ] RGB camera fallback - ❌ FAILED
+- [ ] RGB camera fallback - ⚠️ FIX APPLIED, UNTESTED ON HARDWARE
 - [ ] Camera reconnect - ⚠️ NEEDS TESTING
 - [ ] Y16 format - ⚠️ UNTESTED
 - [ ] MJPEG format - ⚠️ UNTESTED
@@ -244,7 +269,7 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 ### Before Release
 - [x] Code compiles without errors
 - [x] UVC streaming works reliably
-- [ ] RGB fallback works (BLOCKING)
+- [ ] RGB fallback works (BLOCKING - fix applied, awaiting on-device confirmation)
 - [ ] All formats tested (Y16, I420, MJPEG)
 - [ ] Documentation complete
 - [ ] User guide written
@@ -302,8 +327,7 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 ## 📅 Timeline Estimates
 
 ### Immediate (Next Session)
-- [ ] Investigate RGB camera fallback root cause (2-3 hours)
-- [ ] Try Camera2 API approach (2-4 hours)
+- [ ] Test RGB camera fallback fix on real Glass EE2 hardware (confirm startPreview no longer throws)
 - [ ] Test Y16 format with Boson (1 hour)
 
 ### Short Term (This Week)
@@ -370,12 +394,12 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 - Build system stable with Gradle 7.6
 
 ### Remaining Challenges 🚧
-- RGB camera fallback not working
+- RGB camera fallback - root cause found and fix applied (2026-09-24), not yet verified on hardware
 - Need to verify display is rendering correctly
 - Untested formats (Y16, MJPEG)
 
 ### Next Priority 🎯
-**Fix RGB camera fallback** - This is the main blocker for graceful degradation when thermal camera disconnects.
+**Test RGB camera fallback fix on real Glass EE2 hardware** - Confirm `startPreview()` no longer throws now that it targets a dedicated SurfaceView instead of the one driven by Canvas thermal rendering.
 
 ---
 

@@ -99,6 +99,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private SurfaceView mSurfaceView;
     private SurfaceHolder mSurfaceHolder;
 
+    // Dedicated surface for RGB camera fallback preview (kept separate from
+    // mSurfaceHolder, which is driven by Canvas rendering for thermal frames)
+    private SurfaceView mRgbSurfaceView;
+    private SurfaceHolder mRgbSurfaceHolder;
+
     // UI Elements
     private TextView mConnectionStatus;
     private TextView mModeIndicator;
@@ -201,6 +206,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         mSurfaceView = findViewById(R.id.surface_view);
         mSurfaceHolder = mSurfaceView.getHolder();
         mSurfaceHolder.addCallback(this);
+
+        mRgbSurfaceView = findViewById(R.id.rgb_surface_view);
+        mRgbSurfaceHolder = mRgbSurfaceView.getHolder();
 
         // Initialize UI elements
         mConnectionStatus = findViewById(R.id.connection_status);
@@ -2855,7 +2863,23 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
         mRgbCameraEnabled = false;
         mLatestRgbFrame = null;
+        revertToThermalSurface();
         Log.i(TAG, "RGB camera stopped");
+    }
+
+    /**
+     * Hide the RGB fallback surface and show the thermal surface again.
+     * Called whenever RGB fallback stops or fails to start.
+     */
+    private void revertToThermalSurface() {
+        runOnUiThread(() -> {
+            if (mRgbSurfaceView != null) {
+                mRgbSurfaceView.setVisibility(View.GONE);
+            }
+            if (mSurfaceView != null) {
+                mSurfaceView.setVisibility(View.VISIBLE);
+            }
+        });
     }
 
     /**
@@ -2871,8 +2895,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
 
         // Check if surface is ready
-        if (mSurfaceHolder == null) {
-            Log.w(TAG, "Cannot start RGB fallback - surface not ready");
+        if (mRgbSurfaceHolder == null) {
+            Log.w(TAG, "Cannot start RGB fallback - RGB surface not ready");
             return;
         }
 
@@ -2883,6 +2907,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 stopRgbCamera();
             }
 
+            // Show the dedicated RGB surface and hide the thermal (Canvas-driven) one.
+            // These must never share a Surface - see rgb_surface_view comment in
+            // activity_main.xml for why that broke startPreview() on Glass EE2.
+            // Done after the restart-stop above so stopRgbCamera()'s revert doesn't undo it.
+            runOnUiThread(() -> {
+                mSurfaceView.setVisibility(View.GONE);
+                mRgbSurfaceView.setVisibility(View.VISIBLE);
+            });
+
             // Open Glass EE2 built-in camera (usually camera 0)
             Log.i(TAG, "Opening RGB camera (camera 0)...");
             mRgbCamera = android.hardware.Camera.open(0);
@@ -2890,6 +2923,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (mRgbCamera == null) {
                 Log.e(TAG, "Failed to open RGB camera - returned null");
                 Toast.makeText(this, "RGB camera not available", Toast.LENGTH_LONG).show();
+                revertToThermalSurface();
                 return;
             }
 
@@ -2936,6 +2970,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     mRgbCamera.release();
                     mRgbCamera = null;
                     Toast.makeText(this, "RGB camera parameters not supported", Toast.LENGTH_LONG).show();
+                    revertToThermalSurface();
                     return;
                 }
             } else {
@@ -2943,6 +2978,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 mRgbCamera.release();
                 mRgbCamera = null;
                 Toast.makeText(this, "RGB camera has no supported preview sizes", Toast.LENGTH_LONG).show();
+                revertToThermalSurface();
                 return;
             }
 
@@ -2950,19 +2986,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             try {
                 Log.i(TAG, "Setting RGB camera preview display");
                 // Verify surface is valid before setting
-                if (mSurfaceHolder.getSurface() == null || !mSurfaceHolder.getSurface().isValid()) {
-                    Log.e(TAG, "Surface is not valid - cannot set preview display");
+                if (mRgbSurfaceHolder.getSurface() == null || !mRgbSurfaceHolder.getSurface().isValid()) {
+                    Log.e(TAG, "RGB surface is not valid - cannot set preview display");
                     mRgbCamera.release();
                     mRgbCamera = null;
                     Toast.makeText(this, "Display surface not ready", Toast.LENGTH_LONG).show();
+                    revertToThermalSurface();
                     return;
                 }
-                mRgbCamera.setPreviewDisplay(mSurfaceHolder);
+                mRgbCamera.setPreviewDisplay(mRgbSurfaceHolder);
             } catch (java.io.IOException e) {
                 Log.e(TAG, "Failed to set preview display", e);
                 mRgbCamera.release();
                 mRgbCamera = null;
                 Toast.makeText(this, "Failed to set RGB camera display", Toast.LENGTH_LONG).show();
+                revertToThermalSurface();
                 return;
             }
 
@@ -2981,6 +3019,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 mRgbCamera.release();
                 mRgbCamera = null;
                 Toast.makeText(this, "Failed to start RGB camera preview", Toast.LENGTH_LONG).show();
+                revertToThermalSurface();
                 return;
             }
             mRgbCameraEnabled = true;
@@ -3016,9 +3055,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
             mRgbCameraEnabled = false;
             mUsingRgbFallback = false;
+            revertToThermalSurface();
         } catch (Exception e) {
             Log.e(TAG, "Failed to start RGB fallback camera - Exception: " + e.getMessage(), e);
             Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_LONG).show();
+            revertToThermalSurface();
         }
     }
     

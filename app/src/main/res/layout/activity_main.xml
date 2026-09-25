@@ -17,6 +17,19 @@
         android:layout_height="match_parent"
         android:layout_centerInParent="true" />
 
+    <!-- Dedicated surface for RGB camera fallback preview.
+         Must be a separate Surface from surface_view: the thermal view is
+         driven by Canvas software rendering (lockCanvas/unlockCanvasAndPost),
+         and android.hardware.Camera.setPreviewDisplay() cannot reliably take
+         over a Surface that already has a Canvas producer attached on Glass
+         EE2's camera HAL (this was the cause of startPreview() RuntimeException). -->
+    <SurfaceView
+        android:id="@+id/rgb_surface_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_centerInParent="true"
+        android:visibility="gone" />
+
     <!-- Status overlay (top bar) -->
     <LinearLayout
         android:id="@+id/status_bar"
