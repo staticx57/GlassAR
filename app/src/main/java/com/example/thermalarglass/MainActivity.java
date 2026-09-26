@@ -12,11 +12,13 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.SurfaceTexture;
 import android.hardware.usb.UsbDevice;
 import android.media.MediaRecorder;
 import android.os.BatteryManager;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Base64;
 import android.util.Log;
@@ -164,7 +166,31 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Glass EE2 built-in RGB camera
     private android.hardware.Camera mRgbCamera;
     private boolean mRgbCameraEnabled = false;
-    private byte[] mLatestRgbFrame = null;
+    // Thermal+RGB fusion mode: RGB camera runs against an invisible SurfaceTexture
+    // (no on-screen preview - it never touches mSurfaceHolder or mRgbSurfaceHolder)
+    // and its frames are reduced to an edge/outline overlay drawn over the thermal
+    // image. Deliberately decoupled from the thermal render loop's frame rate -
+    // it recomputes on its own slower cadence on a background thread.
+    private static final int FUSION_TEXTURE_ID = 42; // arbitrary; never bound to a real GL context
+    private static final long FUSION_MIN_INTERVAL_MS = 120; // overlay refresh cadence
+    private static final int EDGE_THRESHOLD = 40;
+    private static final int EDGE_OVERLAY_COLOR = Color.argb(180, 0, 255, 255); // translucent cyan
+    private SurfaceTexture mRgbPreviewTexture;
+    private int mRgbPreviewWidth;
+    private int mRgbPreviewHeight;
+    private HandlerThread mFusionHandlerThread;
+    private Handler mFusionHandler;
+    private volatile boolean mFusionProcessing = false;
+    private long mLastFusionComputeTime = 0;
+    // Ping-pong back buffers so the render thread never reads a half-written overlay
+    private int mFusionOverlayWidth;
+    private int mFusionOverlayHeight;
+    private Bitmap mEdgeOverlayBufferA;
+    private Bitmap mEdgeOverlayBufferB;
+    private int[] mEdgeOverlayPixelsA;
+    private int[] mEdgeOverlayPixelsB;
+    private boolean mEdgeOverlayUseA = true;
+    private volatile Bitmap mEdgeOverlayBitmap; // published, fully-written overlay for rendering
 
     // Camera mode tracking
     private boolean mThermalCameraActive = false;
@@ -176,6 +202,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Latest thermal frame for snapshot capture
     private Bitmap mLatestThermalBitmap = null;
     private ByteBuffer mLatestFrameData = null;
+
+    // Reused buffers for thermal frame decoding (avoid per-frame allocation/GC churn).
+    // Safe to share a single mutable Bitmap across frames because everything that reads
+    // mLatestThermalBitmap either runs synchronously on the render thread (recording path)
+    // or takes an explicit defensive copy before handing off to another thread (async
+    // snapshot capture - see captureSnapshot()).
+    private Bitmap mY16Bitmap = null;
+    private int[] mY16Pixels = null;
+    private byte[] mY16FrameCopy = null;
+    private Bitmap mI420Bitmap = null;
+    private int[] mI420Pixels = null;
+    private byte[] mI420FrameCopy = null;
 
     // Video recording (frame-based for Glass EE2)
     private int mRecordingFrameInterval = 3; // Capture every 3rd frame (~10 fps from 30fps source)
@@ -615,11 +653,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             mProcessingIndicator.setVisibility(View.VISIBLE);
         }
 
+        // Defensive copy taken NOW, synchronously, on the calling thread. The render
+        // loop reuses a single mutable Bitmap per format (see convertY16ToBitmap /
+        // convertI420ToBitmap) to avoid per-frame allocation, so mLatestThermalBitmap
+        // can be overwritten with the next frame's pixels at any time. Copying here
+        // - before handing off to the background save thread below - avoids reading
+        // a torn/in-progress frame.
+        final Bitmap thermalSnapshotSource = (mLatestThermalBitmap != null)
+                ? mLatestThermalBitmap.copy(mLatestThermalBitmap.getConfig(), false)
+                : null;
+
         // Save snapshot in background thread
         new Thread(() -> {
             try {
                 // Create snapshot bitmap with annotations
-                Bitmap snapshot = createSnapshotBitmap();
+                Bitmap snapshot = createSnapshotBitmap(thermalSnapshotSource);
 
                 if (snapshot == null) {
                     runOnUiThread(() -> {
@@ -723,10 +771,23 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /**
-     * Creates a snapshot bitmap with thermal image and annotations
+     * Creates a snapshot bitmap with thermal image and annotations, reading directly
+     * from mLatestThermalBitmap. Only safe when called synchronously on the render
+     * thread right after that field was set (e.g. the recording path in
+     * renderThermalFrame()) - callers on another thread must use the overload below
+     * with a defensive copy instead, since mLatestThermalBitmap is a reused mutable
+     * Bitmap that the render loop can overwrite at any time.
      */
     private Bitmap createSnapshotBitmap() {
-        if (mLatestThermalBitmap == null) {
+        return createSnapshotBitmap(mLatestThermalBitmap);
+    }
+
+    /**
+     * Creates a snapshot bitmap with thermal image and annotations from the given
+     * source bitmap (pass a defensive copy when calling from a background thread).
+     */
+    private Bitmap createSnapshotBitmap(Bitmap thermalSource) {
+        if (thermalSource == null) {
             return null;
         }
 
@@ -739,7 +800,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         // Scale and draw thermal bitmap
         Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
-        canvas.drawBitmap(mLatestThermalBitmap, null, destRect, null);
+        canvas.drawBitmap(thermalSource, null, destRect, null);
 
         // Draw annotations on top
         drawAnnotations(canvas);
@@ -2263,6 +2324,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 Rect destRect = new Rect(0, 0, GLASS_WIDTH, GLASS_HEIGHT);
                 canvas.drawBitmap(thermalBitmap, null, destRect, null);
 
+                // Thermal+RGB fusion: draw the latest edge overlay (computed
+                // asynchronously on its own slower cadence - see computeEdgeOverlay)
+                // on top of the thermal image.
+                if (MODE_THERMAL_RGB_FUSION.equals(mCurrentMode)) {
+                    Bitmap edgeOverlay = mEdgeOverlayBitmap;
+                    if (edgeOverlay != null) {
+                        canvas.drawBitmap(edgeOverlay, null, destRect, null);
+                    }
+                }
+
                 // Log successful render (only first 5 frames)
                 if (mFrameCount <= 5) {
                     Log.i(TAG, "✓ Frame #" + mFrameCount + " rendered successfully to display");
@@ -2382,29 +2453,33 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return null;
             }
 
+            // Reuse persistent buffers across frames to avoid per-frame allocation/GC churn
+            if (mY16FrameCopy == null) {
+                mY16FrameCopy = new byte[Y16_FRAME_SIZE];
+            }
+            if (mY16Bitmap == null) {
+                mY16Bitmap = Bitmap.createBitmap(BOSON_WIDTH, BOSON_HEIGHT, Bitmap.Config.ARGB_8888);
+                mY16Pixels = new int[BOSON_WIDTH * BOSON_HEIGHT];
+            }
+
             // Make defensive copy - only copy image data, skip telemetry rows if present
             frameData.rewind();
-            byte[] frameCopy = new byte[Y16_FRAME_SIZE];
-            frameData.get(frameCopy);
+            frameData.get(mY16FrameCopy);
 
             // If frame has telemetry (320×258), we already copied only first 163,840 bytes (320×256)
             // The last 1,280 bytes (2 telemetry rows) are automatically ignored
 
-            // Create bitmap (320×256)
-            Bitmap bitmap = Bitmap.createBitmap(BOSON_WIDTH, BOSON_HEIGHT, Bitmap.Config.ARGB_8888);
-            int[] pixels = new int[BOSON_WIDTH * BOSON_HEIGHT];
-
             // Extract 16-bit values from Y16 format
             int byteIndex = 0;
-            for (int i = 0; i < pixels.length; i++) {
-                if (byteIndex + 1 >= frameCopy.length) {
+            for (int i = 0; i < mY16Pixels.length; i++) {
+                if (byteIndex + 1 >= mY16FrameCopy.length) {
                     Log.w(TAG, "Buffer underrun at pixel " + i);
                     break;
                 }
 
                 // Read 16-bit Y16 value (Little Endian)
-                int lowByte = frameCopy[byteIndex] & 0xFF;
-                int highByte = frameCopy[byteIndex + 1] & 0xFF;
+                int lowByte = mY16FrameCopy[byteIndex] & 0xFF;
+                int highByte = mY16FrameCopy[byteIndex + 1] & 0xFF;
                 int y16Value = (highByte << 8) | lowByte;
 
                 // Scale 16-bit (0-65535) to 8-bit (0-255) for colormap
@@ -2413,13 +2488,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 byteIndex += 2;
 
                 // Apply thermal colormap
-                pixels[i] = applyThermalColormap(y8Value);
+                mY16Pixels[i] = applyThermalColormap(y8Value);
             }
 
-            bitmap.setPixels(pixels, 0, BOSON_WIDTH, 0, 0, BOSON_WIDTH, BOSON_HEIGHT);
+            mY16Bitmap.setPixels(mY16Pixels, 0, BOSON_WIDTH, 0, 0, BOSON_WIDTH, BOSON_HEIGHT);
             frameData.rewind();
 
-            return bitmap;
+            return mY16Bitmap;
 
         } catch (Exception e) {
             Log.e(TAG, "Error converting Y16 frame", e);
@@ -2438,43 +2513,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return null;
             }
 
+            // Reuse persistent buffers across frames to avoid per-frame allocation/GC churn
+            if (mI420FrameCopy == null) {
+                mI420FrameCopy = new byte[I420_FRAME_SIZE];
+            }
+            if (mI420Bitmap == null) {
+                mI420Bitmap = Bitmap.createBitmap(I420_WIDTH, I420_HEIGHT, Bitmap.Config.ARGB_8888);
+                mI420Pixels = new int[I420_WIDTH * I420_HEIGHT];
+            }
+
             // Make defensive copy - only copy image data, skip telemetry rows if present
             frameData.rewind();
-            byte[] frameCopy = new byte[I420_FRAME_SIZE];
-            frameData.get(frameCopy);
+            frameData.get(mI420FrameCopy);
 
             // If frame has telemetry (640×514), we already copied only first 491,520 bytes (640×512)
             // The telemetry rows at the end are automatically ignored
-
-            // Create bitmap (640×512)
-            Bitmap bitmap = Bitmap.createBitmap(I420_WIDTH, I420_HEIGHT, Bitmap.Config.ARGB_8888);
-            int[] pixels = new int[I420_WIDTH * I420_HEIGHT];
 
             // I420 structure:
             // Y plane: 640×512 bytes (full resolution luminance)
             // U plane: 320×256 bytes (subsampled chrominance)
             // V plane: 320×256 bytes (subsampled chrominance)
             int ySize = I420_WIDTH * I420_HEIGHT;
-            int uvSize = (I420_WIDTH / 2) * (I420_HEIGHT / 2);
 
             // Extract Y plane and apply colormap (ignoring U/V for thermal visualization)
-            for (int i = 0; i < pixels.length; i++) {
+            for (int i = 0; i < mI420Pixels.length; i++) {
                 if (i >= ySize) {
                     Log.w(TAG, "Y plane underrun at pixel " + i);
                     break;
                 }
 
                 // Read Y value from Y plane
-                int yValue = frameCopy[i] & 0xFF;
+                int yValue = mI420FrameCopy[i] & 0xFF;
 
                 // Apply thermal colormap to luminance
-                pixels[i] = applyThermalColormap(yValue);
+                mI420Pixels[i] = applyThermalColormap(yValue);
             }
 
-            bitmap.setPixels(pixels, 0, I420_WIDTH, 0, 0, I420_WIDTH, I420_HEIGHT);
+            mI420Bitmap.setPixels(mI420Pixels, 0, I420_WIDTH, 0, 0, I420_WIDTH, I420_HEIGHT);
             frameData.rewind();
 
-            return bitmap;
+            return mI420Bitmap;
 
         } catch (Exception e) {
             Log.e(TAG, "Error converting I420 frame", e);
@@ -2799,6 +2877,145 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    /**
+     * Finds the supported camera preview size closest to the requested target
+     * dimensions. Shared by the RGB fusion camera and the RGB fallback camera.
+     */
+    private android.hardware.Camera.Size findBestPreviewSize(
+            android.hardware.Camera.Parameters params, int targetWidth, int targetHeight) {
+        java.util.List<android.hardware.Camera.Size> supportedSizes = params.getSupportedPreviewSizes();
+        android.hardware.Camera.Size bestSize = null;
+        int minDiff = Integer.MAX_VALUE;
+
+        for (android.hardware.Camera.Size size : supportedSizes) {
+            int diff = Math.abs(size.width - targetWidth) + Math.abs(size.height - targetHeight);
+            if (diff < minDiff) {
+                minDiff = diff;
+                bestSize = size;
+            }
+        }
+        if (bestSize != null) {
+            Log.i(TAG, "Best preview size for " + targetWidth + "x" + targetHeight + ": " +
+                    bestSize.width + "x" + bestSize.height + " (from " + supportedSizes.size() + " options)");
+        }
+        return bestSize;
+    }
+
+    private void startFusionThreadIfNeeded() {
+        if (mFusionHandlerThread == null) {
+            mFusionHandlerThread = new HandlerThread("RgbFusionThread");
+            mFusionHandlerThread.start();
+            mFusionHandler = new Handler(mFusionHandlerThread.getLooper());
+        }
+    }
+
+    private void stopFusionThread() {
+        if (mFusionHandlerThread != null) {
+            mFusionHandlerThread.quitSafely();
+            mFusionHandlerThread = null;
+            mFusionHandler = null;
+        }
+        mFusionProcessing = false;
+        mEdgeOverlayBitmap = null;
+    }
+
+    /**
+     * Computes an edge/outline overlay from an NV21 RGB camera frame and publishes
+     * it for renderThermalFrame() to draw. Runs on mFusionHandlerThread, never on
+     * the render thread or the camera's callback thread.
+     *
+     * Uses only the NV21 luminance (Y) plane - the first width*height bytes - since
+     * outlines don't need color, and works at half resolution (sampling every other
+     * pixel) to keep this cheap on Glass EE2's Snapdragon 710. Writes into whichever
+     * back buffer isn't currently published, then publishes it in one reference
+     * assignment so the render thread never observes a partially-written bitmap.
+     */
+    private void computeEdgeOverlay(byte[] nv21, int width, int height) {
+        int outW = Math.max(1, width / 2);
+        int outH = Math.max(1, height / 2);
+
+        if (mEdgeOverlayPixelsA == null || mFusionOverlayWidth != outW || mFusionOverlayHeight != outH) {
+            mFusionOverlayWidth = outW;
+            mFusionOverlayHeight = outH;
+            mEdgeOverlayBufferA = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+            mEdgeOverlayBufferB = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+            mEdgeOverlayPixelsA = new int[outW * outH];
+            mEdgeOverlayPixelsB = new int[outW * outH];
+        }
+
+        Bitmap backBuffer = mEdgeOverlayUseA ? mEdgeOverlayBufferA : mEdgeOverlayBufferB;
+        int[] backPixels = mEdgeOverlayUseA ? mEdgeOverlayPixelsA : mEdgeOverlayPixelsB;
+        mEdgeOverlayUseA = !mEdgeOverlayUseA;
+
+        for (int oy = 0; oy < outH; oy++) {
+            int sy = oy * 2;
+            int syPrev = Math.max(sy - 1, 0);
+            int syNext = Math.min(sy + 1, height - 1);
+            for (int ox = 0; ox < outW; ox++) {
+                int sx = ox * 2;
+                int sxPrev = Math.max(sx - 1, 0);
+                int sxNext = Math.min(sx + 1, width - 1);
+
+                int left = nv21[sy * width + sxPrev] & 0xFF;
+                int right = nv21[sy * width + sxNext] & 0xFF;
+                int up = nv21[syPrev * width + sx] & 0xFF;
+                int down = nv21[syNext * width + sx] & 0xFF;
+
+                // Cheap L1 gradient magnitude approximation (no sqrt needed for a threshold)
+                int gradient = Math.abs(right - left) + Math.abs(down - up);
+                backPixels[oy * outW + ox] = gradient > EDGE_THRESHOLD ? EDGE_OVERLAY_COLOR : Color.TRANSPARENT;
+            }
+        }
+
+        backBuffer.setPixels(backPixels, 0, outW, 0, 0, outW, outH);
+        mEdgeOverlayBitmap = backBuffer;
+    }
+
+    /**
+     * Handles one RGB preview frame: throttles fusion overlay recomputation to
+     * FUSION_MIN_INTERVAL_MS (independent of the thermal render loop's frame rate)
+     * and always returns the buffer to the camera via addCallbackBuffer.
+     */
+    private void processFusionFrame(byte[] data, android.hardware.Camera camera) {
+        long now = System.currentTimeMillis();
+        if (mFusionProcessing || (now - mLastFusionComputeTime) < FUSION_MIN_INTERVAL_MS) {
+            camera.addCallbackBuffer(data);
+            return;
+        }
+        mFusionProcessing = true;
+        mLastFusionComputeTime = now;
+
+        final int width = mRgbPreviewWidth;
+        final int height = mRgbPreviewHeight;
+        mFusionHandler.post(() -> {
+            try {
+                computeEdgeOverlay(data, width, height);
+            } catch (Exception e) {
+                Log.e(TAG, "Error computing fusion edge overlay", e);
+            } finally {
+                camera.addCallbackBuffer(data);
+                mFusionProcessing = false;
+            }
+        });
+    }
+
+    private void cleanUpFusionCameraOnFailure() {
+        if (mRgbCamera != null) {
+            try {
+                mRgbCamera.release();
+            } catch (Exception ex) {
+                Log.e(TAG, "Error releasing camera on failure", ex);
+            }
+            mRgbCamera = null;
+        }
+        if (mRgbPreviewTexture != null) {
+            mRgbPreviewTexture.release();
+            mRgbPreviewTexture = null;
+        }
+        stopFusionThread();
+        mRgbCameraEnabled = false;
+    }
+
     private void startRgbCamera() {
         try {
             // Open Glass EE2 built-in camera (usually camera 0)
@@ -2815,42 +3032,56 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
 
             android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
-            // Set parameters for Glass EE2 camera (640x360 to match display)
-            params.setPreviewSize(640, 360);
-            mRgbCamera.setParameters(params);
 
-            mRgbCamera.setPreviewCallback(new android.hardware.Camera.PreviewCallback() {
-                @Override
-                public void onPreviewFrame(byte[] data, android.hardware.Camera camera) {
-                    // Store latest RGB frame for fusion
-                    mLatestRgbFrame = data;
-                }
-            });
+            // Find supported preview size closest to display size (the edge overlay
+            // is downscaled again before drawing, so this doesn't need to be exact)
+            android.hardware.Camera.Size bestSize = findBestPreviewSize(params, 640, 360);
+            if (bestSize == null) {
+                Log.e(TAG, "No supported preview sizes found for RGB fusion camera");
+                cleanUpFusionCameraOnFailure();
+                return;
+            }
+            params.setPreviewSize(bestSize.width, bestSize.height);
+            params.setPreviewFormat(android.graphics.ImageFormat.NV21);
+            mRgbCamera.setParameters(params);
+            mRgbPreviewWidth = bestSize.width;
+            mRgbPreviewHeight = bestSize.height;
+
+            // Fusion mode never shows a raw RGB preview on screen - only the edge
+            // overlay drawn by renderThermalFrame(). Give the camera an invisible
+            // SurfaceTexture instead of setPreviewDisplay(), so it never touches
+            // either on-screen SurfaceView (mixing Camera preview output with a
+            // Surface already used by Canvas rendering is what caused the RGB
+            // fallback bug fixed earlier - see stopRgbCamera()/revertToThermalSurface).
+            mRgbPreviewTexture = new SurfaceTexture(FUSION_TEXTURE_ID);
+            mRgbCamera.setPreviewTexture(mRgbPreviewTexture);
+
+            startFusionThreadIfNeeded();
+
+            // setPreviewCallbackWithBuffer + addCallbackBuffer so Android reuses the
+            // same two byte[] buffers every frame instead of allocating a new one
+            // per frame (the legacy setPreviewCallback() API allocates fresh memory
+            // for every single frame delivered).
+            int bufferSize = bestSize.width * bestSize.height *
+                    android.graphics.ImageFormat.getBitsPerPixel(android.graphics.ImageFormat.NV21) / 8;
+            mRgbCamera.addCallbackBuffer(new byte[bufferSize]);
+            mRgbCamera.addCallbackBuffer(new byte[bufferSize]);
+            mRgbCamera.setPreviewCallbackWithBuffer(this::processFusionFrame);
 
             mRgbCamera.startPreview();
             mRgbCameraEnabled = true;
 
-            Log.i(TAG, "✓ RGB camera started successfully");
+            Log.i(TAG, "✓ RGB camera started successfully (" + bestSize.width + "x" + bestSize.height + ", fusion overlay mode)");
 
         } catch (RuntimeException e) {
             Log.e(TAG, "Failed to start RGB camera - RuntimeException: " + e.getMessage(), e);
             Toast.makeText(this, "Failed to start RGB camera: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-
-            // Clean up on failure
-            if (mRgbCamera != null) {
-                try {
-                    mRgbCamera.release();
-                } catch (Exception ex) {
-                    Log.e(TAG, "Error releasing camera on failure", ex);
-                }
-                mRgbCamera = null;
-            }
-            mRgbCameraEnabled = false;
+            cleanUpFusionCameraOnFailure();
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to start RGB camera: " + e.getMessage(), e);
             Toast.makeText(this, "Failed to start RGB camera", Toast.LENGTH_SHORT).show();
-            mRgbCameraEnabled = false;
+            cleanUpFusionCameraOnFailure();
         }
     }
 
@@ -2861,8 +3092,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             mRgbCamera.release();
             mRgbCamera = null;
         }
+        if (mRgbPreviewTexture != null) {
+            mRgbPreviewTexture.release();
+            mRgbPreviewTexture = null;
+        }
+        stopFusionThread();
         mRgbCameraEnabled = false;
-        mLatestRgbFrame = null;
         revertToThermalSurface();
         Log.i(TAG, "RGB camera stopped");
     }
@@ -2930,18 +3165,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             android.hardware.Camera.Parameters params = mRgbCamera.getParameters();
 
             // Find supported preview size closest to 640x360
-            java.util.List<android.hardware.Camera.Size> supportedSizes = params.getSupportedPreviewSizes();
-            android.hardware.Camera.Size bestSize = null;
-            int minDiff = Integer.MAX_VALUE;
-
-            Log.i(TAG, "Finding best preview size for 640x360 from " + supportedSizes.size() + " supported sizes");
-            for (android.hardware.Camera.Size size : supportedSizes) {
-                int diff = Math.abs(size.width - 640) + Math.abs(size.height - 360);
-                if (diff < minDiff) {
-                    minDiff = diff;
-                    bestSize = size;
-                }
-            }
+            android.hardware.Camera.Size bestSize = findBestPreviewSize(params, 640, 360);
 
             if (bestSize != null) {
                 Log.i(TAG, "Setting RGB camera preview size to " + bestSize.width + "x" + bestSize.height);

@@ -171,15 +171,62 @@ Use project's Gradle wrapper, not system Gradle. Upgrading AGP without full test
 - [ ] Check USB transfer bottlenecks
 - [ ] Profile frame processing time
 
+### Render pipeline optimization (2026-09-26) - AWAITING ON-DEVICE VERIFICATION ⚠️
+**Status:** IMPLEMENTED, NOT YET MEASURED ON HARDWARE
+
+`convertY16ToBitmap()` / `convertI420ToBitmap()` were allocating a brand-new
+`Bitmap` (up to 1.3MB) plus a brand-new `int[]` pixel buffer (up to 1.3MB)
+*every single frame*, at up to 60fps - a likely contributor to the ~19fps
+ceiling via GC pressure on Glass EE2's Snapdragon 710. Changed to reuse one
+persistent Bitmap/pixel-array/byte-array set per format across frames.
+
+Because the render bitmap is now mutable and reused, `captureSnapshot()`
+(which reads it from a background thread) now takes an explicit defensive
+`.copy()` synchronously before handing off to that thread, to avoid reading a
+frame the render loop is mid-overwrite on. The recording path
+(`createSnapshotBitmap()` called directly from `renderThermalFrame()`) needed
+no such change - it already runs synchronously on the render thread.
+
+**Needs on-device confirmation:** actual FPS improvement, no visual
+corruption/tearing, snapshots and recorded frames still look correct.
+
+### Thermal+RGB fusion mode (2026-09-26) - AWAITING ON-DEVICE VERIFICATION ⚠️
+**Status:** IMPLEMENTED, NOT YET TESTED ON HARDWARE
+
+Fusion mode previously opened the RGB camera and stored frames in
+`mLatestRgbFrame`, but nothing ever read that field - it was pure background
+camera/CPU/battery cost with zero visual effect, and `startRgbCamera()` never
+called `setPreviewDisplay()`/`setPreviewTexture()` before `startPreview()`,
+which likely threw on API 27 (same class of bug as the RGB fallback issue
+above) meaning fusion mode may never have actually started successfully.
+
+Implemented: the RGB camera now targets an invisible `SurfaceTexture` (never
+touching either on-screen `SurfaceView`), uses `setPreviewCallbackWithBuffer`
++ `addCallbackBuffer` so Android reuses two fixed byte buffers instead of
+allocating a new one per frame, and a dedicated background `HandlerThread`
+computes a Sobel-style edge/outline overlay from the NV21 Y-plane at half
+resolution, throttled to recompute at most every 120ms (fusion mode is
+allowed to run slower than thermal-only, by design). `renderThermalFrame()`
+draws the latest published overlay on top of the thermal image whenever
+`mCurrentMode == MODE_THERMAL_RGB_FUSION`.
+
+**Needs on-device confirmation:**
+- [ ] RGB camera actually opens and starts preview in fusion mode
+- [ ] Edge overlay is visually useful (color/opacity/threshold may need tuning)
+- [ ] No performance regression to thermal-only mode (overlay work is meant to be fully decoupled/background)
+- [ ] Battery impact of running a second camera concurrently
+
 ---
 
 ## 🎯 Future Enhancements
 
 ### High Priority
 1. [ ] **Verify RGB camera fallback fix on hardware** - Root cause fixed (dual-surface conflict), needs on-device confirmation
-2. [ ] **Verify display is correct** - Confirm split screen is fixed
-3. [ ] **Test Y16 format** - Radiometric data more useful than I420
-4. [ ] **Test MJPEG format** - Should work with current code
+2. [ ] **Verify render pipeline optimization on hardware** - Bitmap reuse implemented, needs FPS/correctness confirmation
+3. [ ] **Verify Thermal+RGB fusion mode on hardware** - Edge overlay implemented, needs confirmation it actually works and looks useful
+4. [ ] **Verify display is correct** - Confirm split screen is fixed
+5. [ ] **Test Y16 format** - Radiometric data more useful than I420
+6. [ ] **Test MJPEG format** - Should work with current code
 
 ### Medium Priority
 5. [ ] **Add frame rate control** - Allow user to select FPS
